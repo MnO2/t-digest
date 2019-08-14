@@ -55,14 +55,7 @@ pub struct TDigest {
 }
 
 impl TDigest {
-    pub fn new(
-        centroids: Vec<Centroid>,
-        sum: f64,
-        count: f64,
-        max: f64,
-        min: f64,
-        max_size: usize,
-    ) -> Self {
+    pub fn new(centroids: Vec<Centroid>, sum: f64, count: f64, max: f64, min: f64, max_size: usize) -> Self {
         TDigest {
             centroids,
             max_size,
