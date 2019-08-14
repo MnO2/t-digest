@@ -1,0 +1,12 @@
+[package]
+name = "t-digest"
+repository = "https://github.com/MnO2/t-digest"
+version = "0.1.0"
+license = "MIT"
+authors = ["Paul Meng <me@paulme.ng>"]
+readme = "README.md"
+keywords = ["t-digest", "percentile"]
+edition = "2018"
+exclude = ["/benches/**", "/.travis.yml"]
+
+[dependencies]
