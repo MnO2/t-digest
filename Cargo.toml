@@ -10,3 +10,4 @@ edition = "2018"
 exclude = ["/benches/**", "/.travis.yml"]
 
 [dependencies]
+ordered-float = "1.0"
