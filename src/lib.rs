@@ -215,7 +215,7 @@ impl TDigest {
         }
     }
 
-    pub fn merge_unsorted(self, unsorted_values: Vec<f64>) -> TDigest {
+    pub fn merge_unsorted(&self, unsorted_values: Vec<f64>) -> TDigest {
         let mut sorted_values: Vec<OrderedFloat<f64>> = unsorted_values.into_iter().map(OrderedFloat::from).collect();
         sorted_values.sort();
         let sorted_values = sorted_values.into_iter().map(|f| f.into_inner()).collect();
@@ -223,9 +223,9 @@ impl TDigest {
         self.merge_sorted(sorted_values)
     }
 
-    pub fn merge_sorted(self, sorted_values: Vec<f64>) -> TDigest {
+    pub fn merge_sorted(&self, sorted_values: Vec<f64>) -> TDigest {
         if sorted_values.is_empty() {
-            return self;
+            return self.clone();
         }
 
         let mut result = TDigest::new_with_size(self.max_size());
