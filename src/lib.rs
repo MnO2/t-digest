@@ -300,7 +300,7 @@ impl TDigest {
         result
     }
 
-    fn external_merge(centroids: Vec<Centroid>, first: usize, middle: usize, last: usize) -> Vec<Centroid> {
+    fn external_merge(centroids: &mut Vec<Centroid>, first: usize, middle: usize, last: usize) {
         let mut result: Vec<Centroid> = Vec::with_capacity(centroids.len());
 
         let mut i = first;
@@ -333,7 +333,11 @@ impl TDigest {
             j += 1;
         }
 
-        result
+        i = first;
+        for centroid in result.into_iter() {
+            centroids[i] = centroid;
+            i += 1;
+        }
     }
 
     // Merge multiple T-Digests
@@ -344,11 +348,10 @@ impl TDigest {
         }
 
         let max_size = digests.first().unwrap().max_size;
-
         let mut centroids: Vec<Centroid> = Vec::with_capacity(n_centroids);
         let mut starts: Vec<usize> = Vec::with_capacity(digests.len());
 
-        let mut count: usize = 0;
+        let mut count: f64 = 0.0;
         let mut min = OrderedFloat::from(std::f64::INFINITY);
         let mut max = OrderedFloat::from(std::f64::NEG_INFINITY);
 
@@ -356,8 +359,8 @@ impl TDigest {
         for digest in digests.into_iter() {
             starts.push(start);
 
-            let curr_count = digest.centroids.len();
-            if curr_count > 0 {
+            let curr_count: f64 = digest.count();
+            if curr_count > 0.0 {
                 min = std::cmp::min(min, digest.min);
                 max = std::cmp::max(max, digest.max);
                 count += curr_count;
@@ -381,7 +384,7 @@ impl TDigest {
                     };
 
                     debug_assert!(first <= middle && middle <= last);
-                    centroids = Self::external_merge(centroids, first, middle, last);
+                    Self::external_merge(&mut centroids, first, middle, last);
                 }
             }
 
@@ -601,7 +604,6 @@ mod tests {
         let ans = t.estimate_quantile(0.5);
         let expected: f64 = 500_000.0;
 
-        dbg!(&ans);
         let percentage: f64 = (expected - ans).abs() / expected;
         assert!(percentage < 0.01);
     }
@@ -630,7 +632,6 @@ mod tests {
         let ans = t.estimate_quantile(0.5);
         let expected: f64 = 500_000.0;
 
-        dbg!(&ans);
         let percentage: f64 = (expected - ans).abs() / expected;
         assert!(percentage < 0.01);
     }
@@ -639,9 +640,9 @@ mod tests {
     fn test_merge_digests() {
         let mut digests: Vec<TDigest> = Vec::new();
 
-        for _ in 1..=3 {
+        for _ in 1..=100 {
             let t = TDigest::new_with_size(100);
-            let values: Vec<f64> = (1..=1_000_000).map(f64::from).collect();
+            let values: Vec<f64> = (1..=1_000).map(f64::from).collect();
             let t = t.merge_sorted(values);
             digests.push(t)
         }
@@ -649,22 +650,22 @@ mod tests {
         let t = TDigest::merge_digests(digests);
 
         let ans = t.estimate_quantile(1.0);
-        let expected: f64 = 1_000_000.0;
+        let expected: f64 = 1000.0;
 
         let percentage: f64 = (expected - ans).abs() / expected;
         assert!(percentage < 0.01);
 
         let ans = t.estimate_quantile(0.99);
-        let expected: f64 = 990_000.0;
+        let expected: f64 = 990.0;
 
         let percentage: f64 = (expected - ans).abs() / expected;
         assert!(percentage < 0.01);
 
         let ans = t.estimate_quantile(0.01);
-        let expected: f64 = 10_000.0;
+        let expected: f64 = 10.0;
 
         let percentage: f64 = (expected - ans).abs() / expected;
-        assert!(percentage < 0.01);
+        assert!(percentage < 0.2);
 
         let ans = t.estimate_quantile(0.0);
         let expected: f64 = 1.0;
@@ -673,7 +674,7 @@ mod tests {
         assert!(percentage < 0.01);
 
         let ans = t.estimate_quantile(0.5);
-        let expected: f64 = 500_000.0;
+        let expected: f64 = 500.0;
 
         let percentage: f64 = (expected - ans).abs() / expected;
         assert!(percentage < 0.01);
