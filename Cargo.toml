@@ -3,11 +3,16 @@ name = "tdigest"
 repository = "https://github.com/MnO2/t-digest"
 version = "0.1.0"
 license = "MIT"
+description = "T-Digest algorithm in Rust"
 authors = ["Paul Meng <me@paulme.ng>"]
 readme = "README.md"
 keywords = ["tdigest", "percentile", "statistics"]
 edition = "2018"
 exclude = ["/benches/**", "/.travis.yml"]
+
+[badges]
+travis-ci = { repository = "MnO2/t-digest" }
+codecov = { repository = "MnO2/t-digest" }
 
 [dependencies]
 ordered-float = "1.0"
