@@ -419,4 +419,62 @@ mod tests {
         let percentage: f64 = (expected - ans).abs() / expected;
         assert!(percentage < 0.01);
     }
+
+    #[test]
+    fn test_merge_sorted_against_skewed_distro() {
+        let t = TDigest::new_with_size(100);
+        let mut values: Vec<f64> = (1..=600_000).map(f64::from).collect();
+        for _ in 0..400_000 {
+            values.push(1_000_000.0);
+        }
+
+        let t = t.merge_sorted(values);
+
+        let ans = t.estimate_quantile(0.99);
+        let expected: f64 = 1_000_000.0;
+        let percentage: f64 = (expected - ans).abs() / expected;
+        assert!(percentage < 0.01);
+
+        let ans = t.estimate_quantile(0.01);
+        let expected: f64 = 10_000.0;
+
+        let percentage: f64 = (expected - ans).abs() / expected;
+        assert!(percentage < 0.01);
+
+        let ans = t.estimate_quantile(0.5);
+        let expected: f64 = 500_000.0;
+
+        dbg!(&ans);
+        let percentage: f64 = (expected - ans).abs() / expected;
+        assert!(percentage < 0.01);
+    }
+
+    #[test]
+    fn test_merge_unsorted_against_skewed_distro() {
+        let t = TDigest::new_with_size(100);
+        let mut values: Vec<f64> = (1..=600_000).map(f64::from).collect();
+        for _ in 0..400_000 {
+            values.push(1_000_000.0);
+        }
+
+        let t = t.merge_unsorted(values);
+
+        let ans = t.estimate_quantile(0.99);
+        let expected: f64 = 1_000_000.0;
+        let percentage: f64 = (expected - ans).abs() / expected;
+        assert!(percentage < 0.01);
+
+        let ans = t.estimate_quantile(0.01);
+        let expected: f64 = 10_000.0;
+
+        let percentage: f64 = (expected - ans).abs() / expected;
+        assert!(percentage < 0.01);
+
+        let ans = t.estimate_quantile(0.5);
+        let expected: f64 = 500_000.0;
+
+        dbg!(&ans);
+        let percentage: f64 = (expected - ans).abs() / expected;
+        assert!(percentage < 0.01);
+    }
 }
