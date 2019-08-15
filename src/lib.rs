@@ -31,6 +31,7 @@
 use ordered_float::OrderedFloat;
 use std::cmp::Ordering;
 
+/// Centroid implementation to the cluster mentioned in the paper.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Centroid {
     mean: OrderedFloat<f64>,
@@ -88,6 +89,7 @@ impl Default for Centroid {
     }
 }
 
+/// T-Digest to be operated on.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct TDigest {
     centroids: Vec<Centroid>,
@@ -294,6 +296,7 @@ impl TDigest {
         result
     }
 
+    /// To estimate the value located at `q` quantile
     pub fn estimate_quantile(&self, q: f64) -> f64 {
         if self.centroids.is_empty() {
             return 0.0;
