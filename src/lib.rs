@@ -375,6 +375,12 @@ mod tests {
 
         let t = t.merge_sorted(values);
 
+        let ans = t.estimate_quantile(1.0);
+        let expected: f64 = 1_000_000.0;
+
+        let percentage: f64 = (expected - ans).abs() / expected;
+        assert!(percentage < 0.01);
+
         let ans = t.estimate_quantile(0.99);
         let expected: f64 = 990_000.0;
 
@@ -383,6 +389,12 @@ mod tests {
 
         let ans = t.estimate_quantile(0.01);
         let expected: f64 = 10_000.0;
+
+        let percentage: f64 = (expected - ans).abs() / expected;
+        assert!(percentage < 0.01);
+
+        let ans = t.estimate_quantile(0.0);
+        let expected: f64 = 1.0;
 
         let percentage: f64 = (expected - ans).abs() / expected;
         assert!(percentage < 0.01);
@@ -401,6 +413,12 @@ mod tests {
 
         let t = t.merge_unsorted(values);
 
+        let ans = t.estimate_quantile(1.0);
+        let expected: f64 = 1_000_000.0;
+
+        let percentage: f64 = (expected - ans).abs() / expected;
+        assert!(percentage < 0.01);
+
         let ans = t.estimate_quantile(0.99);
         let expected: f64 = 990_000.0;
 
@@ -409,6 +427,12 @@ mod tests {
 
         let ans = t.estimate_quantile(0.01);
         let expected: f64 = 10_000.0;
+
+        let percentage: f64 = (expected - ans).abs() / expected;
+        assert!(percentage < 0.01);
+
+        let ans = t.estimate_quantile(0.0);
+        let expected: f64 = 1.0;
 
         let percentage: f64 = (expected - ans).abs() / expected;
         assert!(percentage < 0.01);
