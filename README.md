@@ -11,7 +11,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-tdigest = "0.1"
+tdigest = "0.2"
 ```
 
 then you are good to go. If you are using Rust 2015 you have to ``extern crate tdigest`` to your crate root as well.
