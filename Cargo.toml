@@ -1,8 +1,8 @@
 [package]
 name = "tdigest"
 repository = "https://github.com/MnO2/t-digest"
-version = "0.1.0"
-license = "MIT"
+version = "0.1.1"
+license = "Apache-2.0"
 description = "T-Digest algorithm in Rust"
 authors = ["Paul Meng <me@paulme.ng>"]
 readme = "README.md"
