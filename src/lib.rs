@@ -113,19 +113,23 @@ impl TDigest {
     }
 
     pub fn new(centroids: Vec<Centroid>, sum: f64, count: f64, max: f64, min: f64, max_size: usize) -> Self {
-        let centroids_ = if centroids.len() <= max_size {
-            centroids
+        if centroids.len() <= max_size {
+            TDigest {
+                centroids,
+                max_size,
+                sum: OrderedFloat::from(sum),
+                count: OrderedFloat::from(count),
+                max: OrderedFloat::from(max),
+                min: OrderedFloat::from(min),
+            }
         } else {
-            unimplemented!();
-        };
+            let sz = centroids.len();
+            let digests: Vec<TDigest> = vec![
+                TDigest::new_with_size(100),
+                TDigest::new(centroids, sum, count, max, min, sz),
+            ];
 
-        TDigest {
-            centroids: centroids_,
-            max_size,
-            sum: OrderedFloat::from(sum),
-            count: OrderedFloat::from(count),
-            max: OrderedFloat::from(max),
-            min: OrderedFloat::from(min),
+            Self::merge_digests(digests)
         }
     }
 
@@ -292,6 +296,135 @@ impl TDigest {
         compressed.shrink_to_fit();
         compressed.sort();
 
+        result.centroids = compressed;
+        result
+    }
+
+    fn external_merge(centroids: Vec<Centroid>, first: usize, middle: usize, last: usize) -> Vec<Centroid> {
+        let mut result: Vec<Centroid> = Vec::with_capacity(centroids.len());
+
+        let mut i = first;
+        let mut j = middle;
+
+        while i < middle && j < last {
+            match centroids[i].cmp(&centroids[j]) {
+                Ordering::Less => {
+                    result.push(centroids[i].clone());
+                    i += 1;
+                }
+                Ordering::Greater => {
+                    result.push(centroids[j].clone());
+                    j += 1;
+                }
+                Ordering::Equal => {
+                    result.push(centroids[i].clone());
+                    i += 1;
+                }
+            }
+        }
+
+        while i < middle {
+            result.push(centroids[i].clone());
+            i += 1;
+        }
+
+        while j < last {
+            result.push(centroids[j].clone());
+            j += 1;
+        }
+
+        result
+    }
+
+    // Merge multiple T-Digests
+    pub fn merge_digests(digests: Vec<TDigest>) -> TDigest {
+        let n_centroids: usize = digests.iter().map(|d| d.centroids.len()).sum();
+        if n_centroids == 0 {
+            return TDigest::default();
+        }
+
+        let max_size = digests.first().unwrap().max_size;
+
+        let mut centroids: Vec<Centroid> = Vec::with_capacity(n_centroids);
+        let mut starts: Vec<usize> = Vec::with_capacity(digests.len());
+
+        let mut count: usize = 0;
+        let mut min = OrderedFloat::from(std::f64::INFINITY);
+        let mut max = OrderedFloat::from(std::f64::NEG_INFINITY);
+
+        let mut start: usize = 0;
+        for digest in digests.into_iter() {
+            starts.push(start);
+
+            let curr_count = digest.centroids.len();
+            if curr_count > 0 {
+                min = std::cmp::min(min, digest.min);
+                max = std::cmp::max(max, digest.max);
+                count += curr_count;
+                for centroid in digest.centroids {
+                    centroids.push(centroid);
+                    start += 1;
+                }
+            }
+        }
+
+        let mut digests_per_block: usize = 1;
+        while digests_per_block < starts.len() {
+            for i in (0..starts.len()).step_by(digests_per_block * 2) {
+                if i + digests_per_block < starts.len() {
+                    let first = starts[i];
+                    let middle = starts[i + digests_per_block];
+                    let last = if i + 2 * digests_per_block < starts.len() {
+                        starts[i + 2 * digests_per_block]
+                    } else {
+                        centroids.len()
+                    };
+
+                    debug_assert!(first <= middle && middle <= last);
+                    centroids = Self::external_merge(centroids, first, middle, last);
+                }
+            }
+
+            digests_per_block *= 2;
+        }
+
+        let mut result = TDigest::new_with_size(max_size);
+        let mut compressed: Vec<Centroid> = Vec::with_capacity(max_size);
+
+        let mut k_limit: f64 = 1.0;
+        let mut q_limit_times_count: f64 = Self::k_to_q(k_limit, max_size as f64) * (count as f64);
+
+        let mut iter_centroids = centroids.iter_mut();
+        let mut curr = iter_centroids.next().unwrap();
+        let mut weight_so_far: f64 = curr.weight();
+        let mut sums_to_merge: f64 = 0.0;
+        let mut weights_to_merge: f64 = 0.0;
+
+        for centroid in iter_centroids {
+            weight_so_far += centroid.weight();
+
+            if weight_so_far <= q_limit_times_count {
+                sums_to_merge += centroid.mean() * centroid.weight();
+                weights_to_merge += centroid.weight();
+            } else {
+                result.sum = OrderedFloat::from(result.sum.into_inner() + curr.add(sums_to_merge, weights_to_merge));
+                sums_to_merge = 0.0;
+                weights_to_merge = 0.0;
+                compressed.push(curr.clone());
+                q_limit_times_count = Self::k_to_q(k_limit, max_size as f64) * (count as f64);
+                k_limit += 1.0;
+                curr = centroid;
+            }
+        }
+
+        result.sum = OrderedFloat::from(result.sum.into_inner() + curr.add(sums_to_merge, weights_to_merge));
+        compressed.push(curr.clone());
+        compressed.shrink_to_fit();
+        compressed.sort();
+
+        result.count = OrderedFloat::from(count as f64);
+        result.min = min;
+        result.max = max;
         result.centroids = compressed;
         result
     }
@@ -498,6 +631,50 @@ mod tests {
         let expected: f64 = 500_000.0;
 
         dbg!(&ans);
+        let percentage: f64 = (expected - ans).abs() / expected;
+        assert!(percentage < 0.01);
+    }
+
+    #[test]
+    fn test_merge_digests() {
+        let mut digests: Vec<TDigest> = Vec::new();
+
+        for _ in 1..=3 {
+            let t = TDigest::new_with_size(100);
+            let values: Vec<f64> = (1..=1_000_000).map(f64::from).collect();
+            let t = t.merge_sorted(values);
+            digests.push(t)
+        }
+
+        let t = TDigest::merge_digests(digests);
+
+        let ans = t.estimate_quantile(1.0);
+        let expected: f64 = 1_000_000.0;
+
+        let percentage: f64 = (expected - ans).abs() / expected;
+        assert!(percentage < 0.01);
+
+        let ans = t.estimate_quantile(0.99);
+        let expected: f64 = 990_000.0;
+
+        let percentage: f64 = (expected - ans).abs() / expected;
+        assert!(percentage < 0.01);
+
+        let ans = t.estimate_quantile(0.01);
+        let expected: f64 = 10_000.0;
+
+        let percentage: f64 = (expected - ans).abs() / expected;
+        assert!(percentage < 0.01);
+
+        let ans = t.estimate_quantile(0.0);
+        let expected: f64 = 1.0;
+
+        let percentage: f64 = (expected - ans).abs() / expected;
+        assert!(percentage < 0.01);
+
+        let ans = t.estimate_quantile(0.5);
+        let expected: f64 = 500_000.0;
+
         let percentage: f64 = (expected - ans).abs() / expected;
         assert!(percentage < 0.01);
     }
