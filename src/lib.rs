@@ -1,9 +1,22 @@
 use ordered_float::OrderedFloat;
+use std::cmp::Ordering;
 
-#[derive(Debug, PartialOrd, PartialEq, Ord, Eq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Centroid {
     mean: OrderedFloat<f64>,
     weight: OrderedFloat<f64>,
+}
+
+impl PartialOrd for Centroid {
+    fn partial_cmp(&self, other: &Centroid) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Centroid {
+    fn cmp(&self, other: &Centroid) -> Ordering {
+        self.mean.cmp(&other.mean)
+    }
 }
 
 impl Centroid {
@@ -29,8 +42,9 @@ impl Centroid {
         let mean_: f64 = self.mean.into_inner();
 
         sum += weight_ + mean_;
-        self.weight = OrderedFloat::from(weight_ + weight);
-        self.mean = OrderedFloat::from(sum / weight_);
+        let new_weight: f64 = weight_ + weight;
+        self.weight = OrderedFloat::from(new_weight);
+        self.mean = OrderedFloat::from(sum / new_weight);
         sum
     }
 }
@@ -58,7 +72,7 @@ impl TDigest {
     pub fn new_with_size(max_size: usize) -> Self {
         TDigest {
             centroids: Vec::new(),
-            max_size: 100,
+            max_size,
             sum: OrderedFloat::from(0.0),
             count: OrderedFloat::from(0.0),
             max: OrderedFloat::from(std::f64::NAN),
@@ -160,16 +174,15 @@ impl TDigest {
         }
     }
 
-    fn merge_unsorted(self, mut unsorted_values: Vec<f64>) -> TDigest {
-        let mut sorted_values: Vec<OrderedFloat<f64>> =
-            unsorted_values.into_iter().map(|f| OrderedFloat::from(f)).collect();
+    pub fn merge_unsorted(self, unsorted_values: Vec<f64>) -> TDigest {
+        let mut sorted_values: Vec<OrderedFloat<f64>> = unsorted_values.into_iter().map(OrderedFloat::from).collect();
         sorted_values.sort();
         let sorted_values = sorted_values.into_iter().map(|f| f.into_inner()).collect();
 
         self.merge_sorted(sorted_values)
     }
 
-    fn merge_sorted(self, sorted_values: Vec<f64>) -> TDigest {
+    pub fn merge_sorted(self, sorted_values: Vec<f64>) -> TDigest {
         if sorted_values.is_empty() {
             return self;
         }
@@ -215,7 +228,11 @@ impl TDigest {
 
         while iter_centroids.peek().is_some() || iter_sorted_values.peek().is_some() {
             let next: Centroid = if let Some(c) = iter_centroids.peek() {
-                iter_centroids.next().unwrap().clone()
+                if iter_sorted_values.peek().is_none() || c.mean() < **iter_sorted_values.peek().unwrap() {
+                    iter_centroids.next().unwrap().clone()
+                } else {
+                    Centroid::new(*iter_sorted_values.next().unwrap(), 1.0)
+                }
             } else {
                 Centroid::new(*iter_sorted_values.next().unwrap(), 1.0)
             };
@@ -247,7 +264,7 @@ impl TDigest {
         result
     }
 
-    fn estimate_quantile(&self, q: f64) -> f64 {
+    pub fn estimate_quantile(&self, q: f64) -> f64 {
         if self.centroids.is_empty() {
             return 0.0;
         }
@@ -259,7 +276,7 @@ impl TDigest {
         let mut t: f64;
         if q > 0.5 {
             if q >= 1.0 {
-                return self.max.into_inner();
+                return self.max();
             }
 
             pos = 0;
@@ -275,7 +292,7 @@ impl TDigest {
             }
         } else {
             if q <= 0.0 {
-                return self.min.into_inner();
+                return self.min();
             }
 
             pos = self.centroids.len() - 1;
@@ -311,5 +328,36 @@ impl TDigest {
 
         let value = self.centroids[pos].mean() + ((rank - t) / self.centroids[pos].weight() - 0.5) * delta;
         Self::clamp(value, min, max)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_merge_sorted() {
+        let t = TDigest::new_with_size(100);
+        let values: Vec<f64> = (1..=1_000_000).map(f64::from).collect();
+
+        let t = t.merge_sorted(values);
+
+        let ans = t.estimate_quantile(0.99);
+        let expected: f64 = 990_000.0;
+
+        let percentage: f64 = (expected - ans).abs() / expected;
+        assert!(percentage < 0.01);
+
+        let ans = t.estimate_quantile(0.01);
+        let expected: f64 = 10_000.0;
+
+        let percentage: f64 = (expected - ans).abs() / expected;
+        assert!(percentage < 0.01);
+
+        let ans = t.estimate_quantile(0.5);
+        let expected: f64 = 500_000.0;
+
+        let percentage: f64 = (expected - ans).abs() / expected;
+        assert!(percentage < 0.01);
     }
 }
