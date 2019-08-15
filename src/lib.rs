@@ -56,8 +56,14 @@ pub struct TDigest {
 
 impl TDigest {
     pub fn new(centroids: Vec<Centroid>, sum: f64, count: f64, max: f64, min: f64, max_size: usize) -> Self {
+        let centroids_ = if centroids.len() <= max_size {
+            centroids
+        } else {
+            unimplemented!();
+        };
+
         TDigest {
-            centroids,
+            centroids: centroids_,
             max_size,
             sum: OrderedFloat::from(sum),
             count: OrderedFloat::from(count),
@@ -119,5 +125,93 @@ impl Default for TDigest {
             max: OrderedFloat::from(std::f64::NAN),
             min: OrderedFloat::from(std::f64::NAN),
         }
+    }
+}
+
+impl TDigest {
+    fn k_to_q(k: f64, d: f64) -> f64 {
+        let k_div_d = k / d;
+        if k_div_d >= 0.5 {
+            let base = 1.0 - k_div_d;
+            1.0 - 2.0 * base * base
+        } else {
+            2.0 * k_div_d * k_div_d
+        }
+    }
+
+    fn clamp(v: f64, lo: f64, hi: f64) -> f64 {
+        if v > hi {
+            hi
+        } else if v < lo {
+            lo
+        } else {
+            v
+        }
+    }
+
+    fn estimate_quantile(&self, q: f64) -> f64 {
+        if self.centroids.is_empty() {
+            return 0.0;
+        }
+
+        let count_: f64 = self.count.into_inner();
+        let rank: f64 = q * count_;
+
+        let mut pos: usize;
+        let mut t: f64;
+        if q > 0.5 {
+            if q >= 1.0 {
+                return self.max.into_inner();
+            }
+
+            pos = 0;
+            t = count_;
+
+            for (k, centroid) in self.centroids.iter().enumerate().rev() {
+                t -= centroid.weight();
+
+                if rank >= t {
+                    pos = k;
+                    break;
+                }
+            }
+        } else {
+            if q <= 0.0 {
+                return self.min.into_inner();
+            }
+
+            pos = self.centroids.len() - 1;
+            t = 0.0;
+
+            for (k, centroid) in self.centroids.iter().enumerate() {
+                if rank < t + centroid.weight() {
+                    pos = k;
+                    break;
+                }
+
+                t += centroid.weight();
+            }
+        }
+
+        let mut delta = 0.0;
+        let mut min: f64 = self.min.into_inner();
+        let mut max: f64 = self.max.into_inner();
+
+        if self.centroids.len() > 1 {
+            if pos == 0 {
+                delta = self.centroids[pos + 1].mean() - self.centroids[pos].mean();
+                max = self.centroids[pos + 1].mean();
+            } else if pos == (self.centroids.len() - 1) {
+                delta = self.centroids[pos].mean() - self.centroids[pos - 1].mean();
+                min = self.centroids[pos - 1].mean();
+            } else {
+                delta = (self.centroids[pos + 1].mean() - self.centroids[pos - 1].mean()) / 2.0;
+                min = self.centroids[pos - 1].mean();
+                max = self.centroids[pos + 1].mean();
+            }
+        }
+
+        let value = self.centroids[pos].mean() + ((rank - t) / self.centroids[pos].weight() - 0.5) * delta;
+        Self::clamp(value, min, max)
     }
 }
