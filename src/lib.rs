@@ -1,3 +1,33 @@
+//! T-Digest algorithm in rust
+//!
+//! ## Installation
+//!
+//! Add this to your `Cargo.toml`:
+//!
+//! ```toml
+//! [dependencies]
+//! tdigest = "0.1"
+//! ```
+//!
+//! then you are good to go. If you are using Rust 2015 you have to ``extern crate tdigest`` to your crate root as well.
+//!
+//! ## Example
+//!
+//! ```rust
+//! use tdigest::TDigest;
+//!
+//! let t = TDigest::new_with_size(100);
+//! let values: Vec<f64> = (1..=1_000_000).map(f64::from).collect();
+//!
+//! let t = t.merge_sorted(values);
+//!
+//! let ans = t.estimate_quantile(0.99);
+//! let expected: f64 = 990_000.0;
+//!
+//! let percentage: f64 = (expected - ans).abs() / expected;
+//! assert!(percentage < 0.01);
+//! ```
+
 use ordered_float::OrderedFloat;
 use std::cmp::Ordering;
 

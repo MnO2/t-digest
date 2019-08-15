@@ -22,7 +22,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "t-digest"
+name = "tdigest"
 version = "0.1.0"
 dependencies = [
  "ordered-float 1.0.2 (registry+https://github.com/rust-lang/crates.io-index)",

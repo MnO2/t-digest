@@ -1,11 +1,11 @@
 [package]
-name = "t-digest"
+name = "tdigest"
 repository = "https://github.com/MnO2/t-digest"
 version = "0.1.0"
 license = "MIT"
 authors = ["Paul Meng <me@paulme.ng>"]
 readme = "README.md"
-keywords = ["t-digest", "percentile"]
+keywords = ["tdigest", "percentile", "statistics"]
 edition = "2018"
 exclude = ["/benches/**", "/.travis.yml"]
 
