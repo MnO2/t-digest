@@ -31,8 +31,12 @@
 use ordered_float::OrderedFloat;
 use std::cmp::Ordering;
 
+#[cfg(feature = "use_serde")]
+use serde::{Serialize,Deserialize};
+
 /// Centroid implementation to the cluster mentioned in the paper.
 #[derive(Debug, PartialEq, Eq, Clone)]
+#[cfg_attr(feature = "use_serde", derive(Serialize, Deserialize))]
 pub struct Centroid {
     mean: OrderedFloat<f64>,
     weight: OrderedFloat<f64>,
@@ -91,6 +95,7 @@ impl Default for Centroid {
 
 /// T-Digest to be operated on.
 #[derive(Debug, PartialEq, Eq, Clone)]
+#[cfg_attr(feature = "use_serde", derive(Serialize, Deserialize))]
 pub struct TDigest {
     centroids: Vec<Centroid>,
     max_size: usize,
