@@ -32,7 +32,7 @@ use ordered_float::OrderedFloat;
 use std::cmp::Ordering;
 
 #[cfg(feature = "use_serde")]
-use serde::{Serialize,Deserialize};
+use serde::{Deserialize, Serialize};
 
 /// Centroid implementation to the cluster mentioned in the paper.
 #[derive(Debug, PartialEq, Eq, Clone)]
