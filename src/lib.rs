@@ -68,15 +68,15 @@ impl Centroid {
         self.weight.into_inner()
     }
 
-    pub fn add(&mut self, mut sum: f64, weight: f64) -> f64 {
+    pub fn add(&mut self, sum: f64, weight: f64) -> f64 {
         let weight_: f64 = self.weight.into_inner();
         let mean_: f64 = self.mean.into_inner();
 
-        sum += weight_ + mean_;
+        let new_sum: f64 = sum + weight_ * mean_;
         let new_weight: f64 = weight_ + weight;
         self.weight = OrderedFloat::from(new_weight);
-        self.mean = OrderedFloat::from(sum / new_weight);
-        sum
+        self.mean = OrderedFloat::from(new_sum / new_weight);
+        new_sum
     }
 }
 
