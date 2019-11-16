@@ -510,6 +510,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_centroid_addition_regression() {
+        //https://github.com/MnO2/t-digest/pull/1
+
+        let vals = vec![1.0, 1.0, 1.0, 2.0, 1.0, 1.0];
+        let mut t = TDigest::new_with_size(10);
+
+        for v in vals {
+            t = t.merge_unsorted(vec![v]);
+        }
+
+        let ans = t.estimate_quantile(0.5);
+        let expected: f64 = 1.0;
+        let percentage: f64 = (expected - ans).abs() / expected;
+        assert!(percentage < 0.01);
+
+        let ans = t.estimate_quantile(0.95);
+        let expected: f64 = 2.0;
+        let percentage: f64 = (expected - ans).abs() / expected;
+        assert!(percentage < 0.01);
+    }
+
+    #[test]
     fn test_merge_sorted_against_uniform_distro() {
         let t = TDigest::new_with_size(100);
         let values: Vec<f64> = (1..=1_000_000).map(f64::from).collect();
