@@ -1,13 +1,13 @@
 [package]
 name = "tdigest"
 repository = "https://github.com/MnO2/t-digest"
-version = "0.2.2"
+version = "0.2.3"
 license = "Apache-2.0"
 description = "T-Digest algorithm in Rust"
 authors = ["Paul Meng <me@paulme.ng>"]
 readme = "README.md"
 keywords = ["tdigest", "percentile", "statistics"]
-edition = "2018"
+edition = "2021"
 exclude = ["/benches/**", "/.travis.yml"]
 
 [badges]
@@ -15,7 +15,7 @@ travis-ci = { repository = "MnO2/t-digest" }
 codecov = { repository = "MnO2/t-digest" }
 
 [dependencies]
-ordered-float = "1.0"
+ordered-float = "2.0"
 serde = { package = "serde", version = "1.0", optional = true, default-features = false }
 
 [features]
