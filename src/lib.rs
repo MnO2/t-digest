@@ -28,6 +28,8 @@
 //! assert!(percentage < 0.01);
 //! ```
 
+pub mod online;
+
 use ordered_float::OrderedFloat;
 use std::cmp::Ordering;
 
@@ -106,6 +108,7 @@ pub struct TDigest {
 }
 
 impl TDigest {
+    /// Create a new t-digest with a maximum centroid count. 100 is the traditional recommendation.
     pub fn new_with_size(max_size: usize) -> Self {
         TDigest {
             centroids: Vec::new(),
@@ -117,6 +120,7 @@ impl TDigest {
         }
     }
 
+    /// Create an explicit TDigest. You probably want TDigest::new_with_size instead.
     pub fn new(centroids: Vec<Centroid>, sum: f64, count: f64, max: f64, min: f64, max_size: usize) -> Self {
         if centroids.len() <= max_size {
             TDigest {
@@ -182,6 +186,7 @@ impl TDigest {
 }
 
 impl Default for TDigest {
+    /// Create a new t-digest with a maximum centroid count. Per tradition, 100 max centroids are used by default.
     fn default() -> Self {
         TDigest {
             centroids: Vec::new(),
@@ -400,7 +405,7 @@ impl TDigest {
         let mut compressed: Vec<Centroid> = Vec::with_capacity(max_size);
 
         let mut k_limit: f64 = 1.0;
-        let mut q_limit_times_count: f64 = Self::k_to_q(k_limit, max_size as f64) * (count as f64);
+        let mut q_limit_times_count: f64 = Self::k_to_q(k_limit, max_size as f64) * count;
 
         let mut iter_centroids = centroids.iter_mut();
         let mut curr = iter_centroids.next().unwrap();
@@ -419,7 +424,7 @@ impl TDigest {
                 sums_to_merge = 0.0;
                 weights_to_merge = 0.0;
                 compressed.push(curr.clone());
-                q_limit_times_count = Self::k_to_q(k_limit, max_size as f64) * (count as f64);
+                q_limit_times_count = Self::k_to_q(k_limit, max_size as f64) * count;
                 k_limit += 1.0;
                 curr = centroid;
             }
@@ -430,7 +435,7 @@ impl TDigest {
         compressed.shrink_to_fit();
         compressed.sort();
 
-        result.count = OrderedFloat::from(count as f64);
+        result.count = OrderedFloat::from(count);
         result.min = min;
         result.max = max;
         result.centroids = compressed;
