@@ -30,3 +30,18 @@ let percentage: f64 = (expected - ans).abs() / expected;
 
 assert!(percentage < 0.01);
 ```
+
+Or, if you want to report with controlled memory and do not already have
+all of your values collected in a vector:
+```rust
+use tdigest::online::OnlineTdigest;
+
+let t = OnlineTdigest::default();
+
+// You can record observations on any thread. The amortized cost
+// is a few tens of nanoseconds.
+(1..1_000_000).for_each(|i| t.observe(i))
+
+// You can get() or reset() at any time. This gives you a TDigest.
+let digest = t.get();
+```

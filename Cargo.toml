@@ -10,13 +10,24 @@ keywords = ["tdigest", "percentile", "statistics"]
 edition = "2021"
 exclude = ["/benches/**", "/.travis.yml"]
 
+[lib]
+bench = false
+
+[[bench]]
+name = "benches"
+path = "src/benches/mod.rs"
+harness = false
+
 [badges]
 travis-ci = { repository = "MnO2/t-digest" }
 codecov = { repository = "MnO2/t-digest" }
 
 [dependencies]
-ordered-float = "2.0"
+ordered-float = "3.4"
 serde = { package = "serde", version = "1.0", optional = true, default-features = false }
+
+[dev-dependencies]
+criterion = { version = "0.4" }
 
 [features]
 use_serde = ["serde", "serde/derive", "ordered-float/serde"]
