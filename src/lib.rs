@@ -732,4 +732,112 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn test_empty_digest() {
+        let t = TDigest::new_with_size(100);
+        assert!(t.is_empty());
+        assert_eq!(t.count(), 0.0);
+        assert_eq!(t.sum(), 0.0);
+        assert_eq!(t.min(), None);
+        assert_eq!(t.max(), None);
+        assert_eq!(t.mean(), None);
+        assert_eq!(t.estimate_quantile(0.5), None);
+        assert_eq!(t.centroids().len(), 0);
+    }
+
+    #[test]
+    fn test_single_value() {
+        let t = TDigest::new_with_size(100);
+        let t = t.merge_sorted(vec![42.0]);
+        assert!(!t.is_empty());
+        assert_eq!(t.count(), 1.0);
+        assert_eq!(t.min(), Some(42.0));
+        assert_eq!(t.max(), Some(42.0));
+        assert_eq!(t.mean(), Some(42.0));
+        assert_eq!(t.estimate_quantile(0.0), Some(42.0));
+        assert_eq!(t.estimate_quantile(0.5), Some(42.0));
+        assert_eq!(t.estimate_quantile(1.0), Some(42.0));
+    }
+
+    #[test]
+    fn test_negative_values() {
+        let t = TDigest::new_with_size(100);
+        let values: Vec<f64> = (-500..=500).map(f64::from).collect();
+        let t = t.merge_sorted(values);
+
+        assert_eq!(t.min(), Some(-500.0));
+        assert_eq!(t.max(), Some(500.0));
+
+        let median = t.estimate_quantile(0.5).unwrap();
+        assert!(
+            (median - 0.0).abs() < 10.0,
+            "Median should be near 0, got {}",
+            median
+        );
+    }
+
+    #[test]
+    fn test_quantile_monotonicity() {
+        let t = TDigest::new_with_size(100);
+        let values: Vec<f64> = (1..=10_000).map(f64::from).collect();
+        let t = t.merge_sorted(values);
+
+        let quantiles = [0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0];
+        let estimates: Vec<f64> = quantiles
+            .iter()
+            .map(|q| t.estimate_quantile(*q).unwrap())
+            .collect();
+
+        for i in 1..estimates.len() {
+            assert!(
+                estimates[i] >= estimates[i - 1],
+                "Quantile estimates not monotonic: q={} -> {}, q={} -> {}",
+                quantiles[i - 1],
+                estimates[i - 1],
+                quantiles[i],
+                estimates[i]
+            );
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "non-empty digest must have min and max")]
+    fn test_new_panics_on_missing_min_max() {
+        let centroids = vec![Centroid::new(1.0, 1.0)];
+        let _ = TDigest::new(centroids, 1.0, 1.0, None, None, 100);
+    }
+
+    #[test]
+    fn test_merge_digests_empty_preserves_max_size() {
+        let digests: Vec<TDigest> = vec![
+            TDigest::new_with_size(200),
+            TDigest::new_with_size(200),
+        ];
+        let result = TDigest::merge_digests(digests);
+        assert_eq!(result.max_size(), 200);
+    }
+
+    #[cfg(feature = "use_serde")]
+    #[test]
+    fn test_serde_round_trip() {
+        let t = TDigest::new_with_size(100);
+        let values: Vec<f64> = (1..=1_000).map(f64::from).collect();
+        let t = t.merge_sorted(values);
+
+        let serialized = serde_json::to_string(&t).unwrap();
+        let deserialized: TDigest = serde_json::from_str(&serialized).unwrap();
+
+        assert_eq!(t.count(), deserialized.count());
+        assert_eq!(t.min(), deserialized.min());
+        assert_eq!(t.max(), deserialized.max());
+        assert_eq!(t.centroids().len(), deserialized.centroids().len());
+
+        for q in &[0.1, 0.5, 0.9, 0.99] {
+            assert_eq!(
+                t.estimate_quantile(*q),
+                deserialized.estimate_quantile(*q)
+            );
+        }
+    }
 }
