@@ -17,4 +17,4 @@ serde = { package = "serde", version = "1.0", optional = true, default-features 
 serde_json = "1.0"
 
 [features]
-use_serde = ["serde", "serde/derive"]
+use_serde = ["serde", "serde/derive", "serde/std"]

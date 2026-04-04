@@ -87,10 +87,7 @@ impl Centroid {
 
 impl Default for Centroid {
     fn default() -> Self {
-        Centroid {
-            mean: 0.0,
-            weight: 1.0,
-        }
+        Centroid { mean: 0.0, weight: 1.0 }
     }
 }
 
@@ -133,14 +130,8 @@ impl TDigest {
             centroids.is_empty() || (min.is_some() && max.is_some()),
             "non-empty digest must have min and max"
         );
-        debug_assert!(
-            min.map_or(true, |v| !v.is_nan()),
-            "min must not be NaN"
-        );
-        debug_assert!(
-            max.map_or(true, |v| !v.is_nan()),
-            "max must not be NaN"
-        );
+        debug_assert!(min.map_or(true, |v| !v.is_nan()), "min must not be NaN");
+        debug_assert!(max.map_or(true, |v| !v.is_nan()), "max must not be NaN");
 
         if centroids.len() <= max_size {
             TDigest {
@@ -264,8 +255,7 @@ impl TDigest {
         let mut compressed: Vec<Centroid> = Vec::with_capacity(self.max_size);
 
         let mut k_limit: f64 = 1.0;
-        let mut q_limit_times_count: f64 =
-            Self::k_to_q(k_limit, self.max_size as f64) * result.count;
+        let mut q_limit_times_count: f64 = Self::k_to_q(k_limit, self.max_size as f64) * result.count;
         k_limit += 1.0;
 
         let mut iter_centroids = self.centroids.iter().peekable();
@@ -289,9 +279,7 @@ impl TDigest {
 
         while iter_centroids.peek().is_some() || iter_sorted_values.peek().is_some() {
             let next: Centroid = if let Some(c) = iter_centroids.peek() {
-                if iter_sorted_values.peek().is_none()
-                    || c.mean() < **iter_sorted_values.peek().unwrap()
-                {
+                if iter_sorted_values.peek().is_none() || c.mean() < **iter_sorted_values.peek().unwrap() {
                     iter_centroids.next().unwrap().clone()
                 } else {
                     Centroid::new(*iter_sorted_values.next().unwrap(), 1.0)
@@ -312,8 +300,7 @@ impl TDigest {
                 weights_to_merge = 0.0;
 
                 compressed.push(curr.clone());
-                q_limit_times_count =
-                    Self::k_to_q(k_limit, self.max_size as f64) * result.count;
+                q_limit_times_count = Self::k_to_q(k_limit, self.max_size as f64) * result.count;
                 k_limit += 1.0;
                 curr = next;
             }
@@ -367,8 +354,7 @@ impl TDigest {
         let mut compressed: Vec<Centroid> = Vec::with_capacity(max_size);
 
         let mut k_limit: f64 = 1.0;
-        let mut q_limit_times_count: f64 =
-            Self::k_to_q(k_limit, max_size as f64) * count;
+        let mut q_limit_times_count: f64 = Self::k_to_q(k_limit, max_size as f64) * count;
         k_limit += 1.0;
 
         let mut iter_centroids = centroids.iter_mut();
@@ -388,8 +374,7 @@ impl TDigest {
                 sums_to_merge = 0.0;
                 weights_to_merge = 0.0;
                 compressed.push(curr.clone());
-                q_limit_times_count =
-                    Self::k_to_q(k_limit, max_size as f64) * count;
+                q_limit_times_count = Self::k_to_q(k_limit, max_size as f64) * count;
                 k_limit += 1.0;
                 curr = centroid;
             }
@@ -472,8 +457,7 @@ impl TDigest {
             }
         }
 
-        let value =
-            self.centroids[pos].mean() + ((rank - t) / self.centroids[pos].weight() - 0.5) * delta;
+        let value = self.centroids[pos].mean() + ((rank - t) / self.centroids[pos].weight() - 0.5) * delta;
         Some(value.clamp(min, max))
     }
 }
@@ -770,11 +754,7 @@ mod tests {
         assert_eq!(t.max(), Some(500.0));
 
         let median = t.estimate_quantile(0.5).unwrap();
-        assert!(
-            (median - 0.0).abs() < 10.0,
-            "Median should be near 0, got {}",
-            median
-        );
+        assert!((median - 0.0).abs() < 10.0, "Median should be near 0, got {}", median);
     }
 
     #[test]
@@ -784,10 +764,7 @@ mod tests {
         let t = t.merge_sorted(values);
 
         let quantiles = [0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0];
-        let estimates: Vec<f64> = quantiles
-            .iter()
-            .map(|q| t.estimate_quantile(*q).unwrap())
-            .collect();
+        let estimates: Vec<f64> = quantiles.iter().map(|q| t.estimate_quantile(*q).unwrap()).collect();
 
         for i in 1..estimates.len() {
             assert!(
@@ -810,10 +787,7 @@ mod tests {
 
     #[test]
     fn test_merge_digests_empty_preserves_max_size() {
-        let digests: Vec<TDigest> = vec![
-            TDigest::new_with_size(200),
-            TDigest::new_with_size(200),
-        ];
+        let digests: Vec<TDigest> = vec![TDigest::new_with_size(200), TDigest::new_with_size(200)];
         let result = TDigest::merge_digests(digests);
         assert_eq!(result.max_size(), 200);
     }
@@ -834,10 +808,7 @@ mod tests {
         assert_eq!(t.centroids().len(), deserialized.centroids().len());
 
         for q in &[0.1, 0.5, 0.9, 0.99] {
-            assert_eq!(
-                t.estimate_quantile(*q),
-                deserialized.estimate_quantile(*q)
-            );
+            assert_eq!(t.estimate_quantile(*q), deserialized.estimate_quantile(*q));
         }
     }
 }
