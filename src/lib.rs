@@ -25,6 +25,12 @@
 //! let percentage: f64 = (expected - ans).abs() / expected;
 //! assert!(percentage < 0.01);
 //! ```
+//!
+//! ## Handling of non-finite values
+//!
+//! NaN and positive or negative infinity are contract violations. Public
+//! ingestion methods check this in debug builds, but estimates are unspecified
+//! if non-finite values are supplied to a release build.
 
 use std::cmp::Ordering;
 
@@ -62,7 +68,7 @@ impl Eq for Centroid {}
 
 impl Centroid {
     pub fn new(mean: f64, weight: f64) -> Self {
-        debug_assert!(!mean.is_nan() && !weight.is_nan(), "mean and weight must not be NaN");
+        debug_assert!(mean.is_finite() && weight.is_finite(), "mean and weight must be finite");
         Centroid { mean, weight }
     }
 
@@ -130,8 +136,8 @@ impl TDigest {
             centroids.is_empty() || (min.is_some() && max.is_some()),
             "non-empty digest must have min and max"
         );
-        debug_assert!(min.map_or(true, |v| !v.is_nan()), "min must not be NaN");
-        debug_assert!(max.map_or(true, |v| !v.is_nan()), "max must not be NaN");
+        debug_assert!(min.map_or(true, f64::is_finite), "min must be finite");
+        debug_assert!(max.map_or(true, f64::is_finite), "max must be finite");
 
         if centroids.len() <= max_size {
             TDigest {
@@ -227,6 +233,10 @@ impl TDigest {
 
     #[must_use]
     pub fn merge_unsorted(&self, unsorted_values: Vec<f64>) -> TDigest {
+        debug_assert!(
+            unsorted_values.iter().all(|value| value.is_finite()),
+            "input values must be finite"
+        );
         let mut sorted_values = unsorted_values;
         sorted_values.sort_by(f64::total_cmp);
         self.merge_sorted(sorted_values)
@@ -234,6 +244,10 @@ impl TDigest {
 
     #[must_use]
     pub fn merge_sorted(&self, sorted_values: Vec<f64>) -> TDigest {
+        debug_assert!(
+            sorted_values.iter().all(|value| value.is_finite()),
+            "input values must be finite"
+        );
         if sorted_values.is_empty() {
             return self.clone();
         }
@@ -315,15 +329,18 @@ impl TDigest {
         result
     }
 
+    /// Merge several digests into one.
+    ///
+    /// The result uses the largest `max_size` among the inputs. With no inputs,
+    /// this returns a digest with the default size of 100.
     #[must_use]
     pub fn merge_digests(digests: Vec<TDigest>) -> TDigest {
+        let max_size = digests.iter().map(TDigest::max_size).max().unwrap_or(100);
         let n_centroids: usize = digests.iter().map(|d| d.centroids.len()).sum();
         if n_centroids == 0 {
-            let max_size = digests.first().map(|d| d.max_size).unwrap_or(100);
             return TDigest::new_with_size(max_size);
         }
 
-        let max_size = digests.first().unwrap().max_size;
         let mut centroids: Vec<Centroid> = Vec::with_capacity(n_centroids);
 
         let mut count: f64 = 0.0;
@@ -459,6 +476,109 @@ impl TDigest {
 
         let value = self.centroids[pos].mean() + ((rank - t) / self.centroids[pos].weight() - 0.5) * delta;
         Some(value.clamp(min, max))
+    }
+
+    /// Estimate the rank (CDF) of `value`: the fraction of inserted values less
+    /// than or equal to it.
+    ///
+    /// Returns `None` if the digest is empty.
+    #[must_use]
+    pub fn estimate_rank(&self, value: f64) -> Option<f64> {
+        debug_assert!(!value.is_nan(), "value must not be NaN");
+        if self.centroids.is_empty() {
+            return None;
+        }
+
+        let min = self.min.unwrap();
+        let max = self.max.unwrap();
+        if self.centroids.len() == 1 || min == max {
+            return Some(if value >= max { 1.0 } else { 0.0 });
+        }
+        if value <= min {
+            return Some(0.0);
+        }
+        if value >= max {
+            return Some(1.0);
+        }
+
+        let first = &self.centroids[0];
+        if value < first.mean() {
+            let width = first.mean() - min;
+            let rank = if width > 0.0 {
+                (value - min) / width * first.weight() / 2.0
+            } else {
+                0.0
+            };
+            return Some((rank / self.count).clamp(0.0, 1.0));
+        }
+
+        let mut weight_before = 0.0;
+        for pair in self.centroids.windows(2) {
+            let left = &pair[0];
+            let right = &pair[1];
+            let left_rank = weight_before + left.weight() / 2.0;
+            let right_rank = weight_before + left.weight() + right.weight() / 2.0;
+            if value <= right.mean() {
+                let width = right.mean() - left.mean();
+                let rank = if width > 0.0 {
+                    left_rank + (value - left.mean()) / width * (right_rank - left_rank)
+                } else {
+                    right_rank
+                };
+                return Some((rank / self.count).clamp(0.0, 1.0));
+            }
+            weight_before += left.weight();
+        }
+
+        let last = self.centroids.last().unwrap();
+        let last_rank = self.count - last.weight() / 2.0;
+        let width = max - last.mean();
+        let rank = if width > 0.0 {
+            last_rank + (value - last.mean()) / width * (self.count - last_rank)
+        } else {
+            self.count
+        };
+        Some((rank / self.count).clamp(0.0, 1.0))
+    }
+
+    /// Estimate the mean of values between quantiles `lo` and `hi`.
+    ///
+    /// Quantiles are clamped to `[0.0, 1.0]`. Returns `None` if the digest is
+    /// empty, either bound is NaN, or the resulting interval is empty.
+    #[must_use]
+    pub fn trimmed_mean(&self, lo: f64, hi: f64) -> Option<f64> {
+        if self.centroids.is_empty() || lo.is_nan() || hi.is_nan() || lo >= hi {
+            return None;
+        }
+
+        let lower = lo.clamp(0.0, 1.0) * self.count;
+        let upper = hi.clamp(0.0, 1.0) * self.count;
+        if lower >= upper {
+            return None;
+        }
+
+        let mut cumulative = 0.0;
+        let mut included_weight = 0.0;
+        let mut included_sum = 0.0;
+        for centroid in &self.centroids {
+            let start = cumulative;
+            let end = start + centroid.weight();
+            let overlap = end.min(upper) - start.max(lower);
+            if overlap > 0.0 {
+                included_weight += overlap;
+                included_sum += centroid.mean() * overlap;
+            }
+            cumulative = end;
+            if cumulative >= upper {
+                break;
+            }
+        }
+
+        if included_weight > 0.0 {
+            Some(included_sum / included_weight)
+        } else {
+            None
+        }
     }
 }
 
@@ -790,6 +910,63 @@ mod tests {
         let digests: Vec<TDigest> = vec![TDigest::new_with_size(200), TDigest::new_with_size(200)];
         let result = TDigest::merge_digests(digests);
         assert_eq!(result.max_size(), 200);
+    }
+
+    #[test]
+    #[should_panic(expected = "input values must be finite")]
+    fn test_merge_unsorted_rejects_nan_in_debug_builds() {
+        let _ = TDigest::default().merge_unsorted(vec![1.0, f64::NAN]);
+    }
+
+    #[test]
+    #[should_panic(expected = "input values must be finite")]
+    fn test_merge_sorted_rejects_infinity_in_debug_builds() {
+        let _ = TDigest::default().merge_sorted(vec![1.0, f64::INFINITY]);
+    }
+
+    #[test]
+    fn test_estimate_rank_uniform_and_round_trip() {
+        let values: Vec<f64> = (1..=1_000_000).map(f64::from).collect();
+        let digest = TDigest::new_with_size(100).merge_sorted(values);
+        assert!((digest.estimate_rank(500_000.0).unwrap() - 0.5).abs() < 0.01);
+        assert_eq!(digest.estimate_rank(1.0), Some(0.0));
+        assert_eq!(digest.estimate_rank(1_000_000.0), Some(1.0));
+
+        for q in [0.01, 0.25, 0.5, 0.75, 0.99] {
+            let value = digest.estimate_quantile(q).unwrap();
+            let rank = digest.estimate_rank(value).unwrap();
+            assert!((rank - q).abs() < 0.03, "q={q}, rank={rank}");
+        }
+    }
+
+    #[test]
+    fn test_estimate_rank_single_value() {
+        let digest = TDigest::default().merge_sorted(vec![42.0]);
+        assert_eq!(digest.estimate_rank(41.0), Some(0.0));
+        assert_eq!(digest.estimate_rank(42.0), Some(1.0));
+        assert_eq!(digest.estimate_rank(43.0), Some(1.0));
+        assert_eq!(TDigest::default().estimate_rank(42.0), None);
+    }
+
+    #[test]
+    fn test_trimmed_mean() {
+        let values: Vec<f64> = (1..=100_000).map(f64::from).collect();
+        let digest = TDigest::new_with_size(100).merge_sorted(values);
+        let exact = 50_000.5;
+        let trimmed = digest.trimmed_mean(0.1, 0.9).unwrap();
+        assert!((trimmed - exact).abs() / exact < 0.01);
+        assert!((digest.trimmed_mean(0.0, 1.0).unwrap() - digest.mean().unwrap()).abs() < 1e-9);
+        assert_eq!(digest.trimmed_mean(0.5, 0.5), None);
+        assert_eq!(TDigest::default().trimmed_mean(0.0, 1.0), None);
+    }
+
+    #[test]
+    fn test_merge_digests_uses_largest_max_size() {
+        let small = TDigest::new_with_size(100).merge_sorted((1..=1_000).map(f64::from).collect());
+        let large = TDigest::new_with_size(500).merge_sorted((1_001..=2_000).map(f64::from).collect());
+        let merged = TDigest::merge_digests(vec![small, large]);
+        assert_eq!(merged.max_size(), 500);
+        assert!(merged.centroids().len() <= 500);
     }
 
     #[cfg(feature = "use_serde")]

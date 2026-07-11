@@ -23,7 +23,7 @@ Centroid {
 }
 ```
 
-Centroids are ordered by `mean` using `f64::total_cmp`, which gives a total ordering over all `f64` values (including NaN, though NaN is rejected by `debug_assert` in the constructor).
+Centroids are ordered by `mean` using `f64::total_cmp`, which gives a total ordering over all `f64` values. Non-finite inputs are rejected by `debug_assert` at public ingestion boundaries and in the centroid constructor.
 
 The `add` method merges additional weight into a centroid, updating its mean incrementally:
 
@@ -169,7 +169,7 @@ Note: the wire format changed in 1.0.0 (`min`/`max` changed from `f64` with NaN 
 The library avoids panicking in normal operation:
 
 - `estimate_quantile`, `mean`, `min`, and `max` return `Option<f64>`, yielding `None` for empty digests.
-- Constructors use `debug_assert` to catch NaN and invalid states during development, but these are compiled out in release builds.
+- Constructors and ingestion methods use `debug_assert` to catch non-finite values and invalid states during development, but these are compiled out in release builds.
 
 ## File layout
 

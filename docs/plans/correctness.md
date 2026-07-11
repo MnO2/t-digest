@@ -23,11 +23,10 @@ Filter is too magical and `Result` breaks the API. Policy:
   `debug_assert!(values.iter().all(|v| !v.is_nan()), "input must not contain NaN")`.
   For `merge_sorted` this is O(n) — acceptable in debug builds only, which is what
   `debug_assert` gives us.
-- Crate-level rustdoc: a "## Handling of NaN and infinities" section stating:
-  NaN input is a contract violation (checked in debug builds, undefined estimates
-  in release); ±∞ values are accepted and behave as ordinary extreme values
-  (verify with the test below; if they *don't* behave sanely, document them as
-  also-rejected and extend the debug_asserts to `is_finite`).
+- Crate-level rustdoc: a "## Handling of NaN and infinities" section. Execution
+  found that interpolation next to an infinite centroid can produce NaN, so NaN
+  and ±∞ are all contract violations (checked in debug builds, undefined
+  estimates in release); boundary assertions use `is_finite`.
 - This matches the existing convention (debug_assert for invariants, no NaN
   sentinels, no Result-ification of a 1.0 API).
 
