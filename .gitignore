@@ -2,3 +2,6 @@
 **/*.rs.bk
 .python-version
 Cargo.lock
+fuzz/artifacts
+fuzz/corpus
+fuzz/target

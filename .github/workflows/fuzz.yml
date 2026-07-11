@@ -1,0 +1,14 @@
+name: Fuzz
+
+on:
+  workflow_dispatch:
+
+jobs:
+  merge:
+    name: Merge target
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - run: cargo install cargo-fuzz
+      - run: cargo fuzz run merge -- -max_total_time=60

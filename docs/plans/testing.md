@@ -47,7 +47,7 @@ expensive ones) so `cargo test` stays fast.
   this does not violate the single-file-library rule. Add `fuzz/target` and
   `fuzz/corpus`/`fuzz/artifacts` to `.gitignore` per cargo-fuzz defaults.
 - Target: interpret arbitrary bytes as `(max_size: u8 clamped to 1..=200, Vec<f64>)`
-  via the `arbitrary` crate; filter NaN from inputs (contract); build a digest,
+  via the `arbitrary` crate; filter non-finite values from inputs (contract); build a digest,
   split-and-merge via `merge_digests`, query quantiles 0.0/0.5/1.0, assert
   monotonic + within min/max + no panic.
 - Fuzzing is nightly-only and slow; do **not** add it to the main CI matrix. Add a

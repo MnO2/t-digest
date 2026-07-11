@@ -90,6 +90,18 @@ impl Centroid {
         self.mean = new_sum / new_weight;
         new_sum
     }
+
+    fn merge(&mut self, mean: f64, weight: f64) {
+        let new_weight = self.weight + weight;
+        if self.mean == mean {
+            self.weight = new_weight;
+            return;
+        }
+        let current_fraction = self.weight / new_weight;
+        let added_fraction = weight / new_weight;
+        self.mean = self.mean * current_fraction + mean * added_fraction;
+        self.weight = new_weight;
+    }
 }
 
 impl Default for Centroid {
@@ -187,6 +199,9 @@ impl TDigest {
     }
 
     #[inline]
+    /// Return the number of inserted values as an `f64`.
+    ///
+    /// Integer counts are represented exactly up to 2^53.
     pub fn count(&self) -> f64 {
         self.count
     }
@@ -304,7 +319,7 @@ impl TDigest {
 
         let mut buffer = mem::take(&mut self.buffer);
         buffer.sort_unstable_by(f64::total_cmp);
-        let mut result = self.compress_sorted(&buffer, self.count, self.min, self.max, Some(self.sum));
+        let mut result = self.compress_sorted(&buffer, self.count, self.min, self.max, self.sum);
         buffer.clear();
         result.buffer = buffer;
         *self = result;
@@ -349,7 +364,7 @@ impl TDigest {
             self.count() + sorted_values.len() as f64,
             min,
             max,
-            None,
+            self.sum + sorted_values.iter().sum::<f64>(),
         )
     }
 
@@ -359,7 +374,7 @@ impl TDigest {
         count: f64,
         min: Option<f64>,
         max: Option<f64>,
-        sum_override: Option<f64>,
+        sum: f64,
     ) -> TDigest {
         let mut result = TDigest::new_with_size(self.max_size());
         result.count = count;
@@ -388,9 +403,6 @@ impl TDigest {
 
         let mut weight_so_far: f64 = curr.weight();
 
-        let mut sums_to_merge: f64 = 0.0;
-        let mut weights_to_merge: f64 = 0.0;
-
         while iter_centroids.peek().is_some() || iter_sorted_values.peek().is_some() {
             let next: Centroid = if let Some(c) = iter_centroids.peek() {
                 if iter_sorted_values.peek().is_none() || c.mean() < **iter_sorted_values.peek().unwrap() {
@@ -402,17 +414,11 @@ impl TDigest {
                 Centroid::new(*iter_sorted_values.next().unwrap(), 1.0)
             };
 
-            let next_sum: f64 = next.mean() * next.weight();
             weight_so_far += next.weight();
 
             if weight_so_far <= q_limit_times_count {
-                sums_to_merge += next_sum;
-                weights_to_merge += next.weight();
+                curr.merge(next.mean(), next.weight());
             } else {
-                result.sum += curr.add(sums_to_merge, weights_to_merge);
-                sums_to_merge = 0.0;
-                weights_to_merge = 0.0;
-
                 compressed.push(curr.clone());
                 q_limit_times_count = Self::k_to_q(k_limit, self.max_size as f64) * result.count;
                 k_limit += 1.0;
@@ -420,15 +426,12 @@ impl TDigest {
             }
         }
 
-        result.sum += curr.add(sums_to_merge, weights_to_merge);
         compressed.push(curr);
         compressed.shrink_to_fit();
         compressed.sort();
 
         result.centroids = compressed;
-        if let Some(sum) = sum_override {
-            result.sum = sum;
-        }
+        result.sum = sum;
         result
     }
 
@@ -451,6 +454,7 @@ impl TDigest {
         let mut centroids: Vec<Centroid> = Vec::with_capacity(n_centroids);
 
         let mut count: f64 = 0.0;
+        let mut sum: f64 = 0.0;
         let mut min: Option<f64> = None;
         let mut max: Option<f64> = None;
 
@@ -466,6 +470,7 @@ impl TDigest {
                     None => digest.max.unwrap(),
                 });
                 count += curr_count;
+                sum += digest.sum();
                 for centroid in digest.centroids {
                     centroids.push(centroid);
                 }
@@ -484,19 +489,12 @@ impl TDigest {
         let mut iter_centroids = centroids.iter_mut();
         let mut curr = iter_centroids.next().unwrap();
         let mut weight_so_far: f64 = curr.weight();
-        let mut sums_to_merge: f64 = 0.0;
-        let mut weights_to_merge: f64 = 0.0;
-
         for centroid in iter_centroids {
             weight_so_far += centroid.weight();
 
             if weight_so_far <= q_limit_times_count {
-                sums_to_merge += centroid.mean() * centroid.weight();
-                weights_to_merge += centroid.weight();
+                curr.merge(centroid.mean(), centroid.weight());
             } else {
-                result.sum += curr.add(sums_to_merge, weights_to_merge);
-                sums_to_merge = 0.0;
-                weights_to_merge = 0.0;
                 compressed.push(curr.clone());
                 q_limit_times_count = Self::k_to_q(k_limit, max_size as f64) * count;
                 k_limit += 1.0;
@@ -504,12 +502,12 @@ impl TDigest {
             }
         }
 
-        result.sum += curr.add(sums_to_merge, weights_to_merge);
         compressed.push(curr.clone());
         compressed.shrink_to_fit();
         compressed.sort();
 
         result.count = count;
+        result.sum = sum;
         result.min = min;
         result.max = max;
         result.centroids = compressed;
@@ -586,7 +584,12 @@ impl TDigest {
         }
 
         let value = self.centroids[pos].mean() + ((rank - t) / self.centroids[pos].weight() - 0.5) * delta;
-        Some(value.clamp(min, max))
+        let finite_value = if value.is_finite() {
+            value
+        } else {
+            self.centroids[pos].mean()
+        };
+        Some(finite_value.clamp(min, max))
     }
 
     /// Estimate the rank (CDF) of `value`: the fraction of inserted values less
@@ -702,6 +705,15 @@ impl TDigest {
 mod tests {
     use super::*;
 
+    fn assert_relative_error(digest: &TDigest, q: f64, expected: f64, max_error: f64) {
+        let estimate = digest.estimate_quantile(q).unwrap();
+        let relative_error = (expected - estimate).abs() / expected.abs();
+        assert!(
+            relative_error < max_error,
+            "q={q}, expected={expected}, estimate={estimate}, relative_error={relative_error}"
+        );
+    }
+
     #[test]
     fn test_centroid_addition_regression() {
         //https://github.com/MnO2/t-digest/pull/1
@@ -726,134 +738,52 @@ mod tests {
 
     #[test]
     fn test_merge_sorted_against_uniform_distro() {
-        let t = TDigest::new_with_size(100);
         let values: Vec<f64> = (1..=1_000_000).map(f64::from).collect();
+        let digest = TDigest::new_with_size(100).merge_sorted(values);
 
-        let t = t.merge_sorted(values);
-
-        let ans = t.estimate_quantile(1.0).unwrap();
-        let expected: f64 = 1_000_000.0;
-
-        let percentage: f64 = (expected - ans).abs() / expected;
-        assert!(percentage < 0.01);
-
-        let ans = t.estimate_quantile(0.99).unwrap();
-        let expected: f64 = 990_000.0;
-
-        let percentage: f64 = (expected - ans).abs() / expected;
-        assert!(percentage < 0.01);
-
-        let ans = t.estimate_quantile(0.01).unwrap();
-        let expected: f64 = 10_000.0;
-
-        let percentage: f64 = (expected - ans).abs() / expected;
-        assert!(percentage < 0.01);
-
-        let ans = t.estimate_quantile(0.0).unwrap();
-        let expected: f64 = 1.0;
-
-        let percentage: f64 = (expected - ans).abs() / expected;
-        assert!(percentage < 0.01);
-
-        let ans = t.estimate_quantile(0.5).unwrap();
-        let expected: f64 = 500_000.0;
-
-        let percentage: f64 = (expected - ans).abs() / expected;
-        assert!(percentage < 0.01);
+        assert_eq!(digest.estimate_quantile(0.0), Some(1.0));
+        assert_relative_error(&digest, 0.01, 10_000.0, 0.002);
+        assert_relative_error(&digest, 0.5, 500_000.0, 0.0003);
+        assert_relative_error(&digest, 0.99, 990_000.0, 0.0001);
+        assert_eq!(digest.estimate_quantile(1.0), Some(1_000_000.0));
     }
 
     #[test]
     fn test_merge_unsorted_against_uniform_distro() {
-        let t = TDigest::new_with_size(100);
         let values: Vec<f64> = (1..=1_000_000).map(f64::from).collect();
+        let digest = TDigest::new_with_size(100).merge_unsorted(values);
 
-        let t = t.merge_unsorted(values);
-
-        let ans = t.estimate_quantile(1.0).unwrap();
-        let expected: f64 = 1_000_000.0;
-
-        let percentage: f64 = (expected - ans).abs() / expected;
-        assert!(percentage < 0.01);
-
-        let ans = t.estimate_quantile(0.99).unwrap();
-        let expected: f64 = 990_000.0;
-
-        let percentage: f64 = (expected - ans).abs() / expected;
-        assert!(percentage < 0.01);
-
-        let ans = t.estimate_quantile(0.01).unwrap();
-        let expected: f64 = 10_000.0;
-
-        let percentage: f64 = (expected - ans).abs() / expected;
-        assert!(percentage < 0.01);
-
-        let ans = t.estimate_quantile(0.0).unwrap();
-        let expected: f64 = 1.0;
-
-        let percentage: f64 = (expected - ans).abs() / expected;
-        assert!(percentage < 0.01);
-
-        let ans = t.estimate_quantile(0.5).unwrap();
-        let expected: f64 = 500_000.0;
-
-        let percentage: f64 = (expected - ans).abs() / expected;
-        assert!(percentage < 0.01);
+        assert_eq!(digest.estimate_quantile(0.0), Some(1.0));
+        assert_relative_error(&digest, 0.01, 10_000.0, 0.002);
+        assert_relative_error(&digest, 0.5, 500_000.0, 0.0003);
+        assert_relative_error(&digest, 0.99, 990_000.0, 0.0001);
+        assert_eq!(digest.estimate_quantile(1.0), Some(1_000_000.0));
     }
 
     #[test]
     fn test_merge_sorted_against_skewed_distro() {
-        let t = TDigest::new_with_size(100);
         let mut values: Vec<f64> = (1..=600_000).map(f64::from).collect();
         for _ in 0..400_000 {
             values.push(1_000_000.0);
         }
 
-        let t = t.merge_sorted(values);
-
-        let ans = t.estimate_quantile(0.99).unwrap();
-        let expected: f64 = 1_000_000.0;
-        let percentage: f64 = (expected - ans).abs() / expected;
-        assert!(percentage < 0.01);
-
-        let ans = t.estimate_quantile(0.01).unwrap();
-        let expected: f64 = 10_000.0;
-
-        let percentage: f64 = (expected - ans).abs() / expected;
-        assert!(percentage < 0.01);
-
-        let ans = t.estimate_quantile(0.5).unwrap();
-        let expected: f64 = 500_000.0;
-
-        let percentage: f64 = (expected - ans).abs() / expected;
-        assert!(percentage < 0.01);
+        let digest = TDigest::new_with_size(100).merge_sorted(values);
+        assert_relative_error(&digest, 0.01, 10_000.0, 0.002);
+        assert_relative_error(&digest, 0.5, 500_000.0, 0.0003);
+        assert_eq!(digest.estimate_quantile(0.99), Some(1_000_000.0));
     }
 
     #[test]
     fn test_merge_unsorted_against_skewed_distro() {
-        let t = TDigest::new_with_size(100);
         let mut values: Vec<f64> = (1..=600_000).map(f64::from).collect();
         for _ in 0..400_000 {
             values.push(1_000_000.0);
         }
 
-        let t = t.merge_unsorted(values);
-
-        let ans = t.estimate_quantile(0.99).unwrap();
-        let expected: f64 = 1_000_000.0;
-        let percentage: f64 = (expected - ans).abs() / expected;
-        assert!(percentage < 0.01);
-
-        let ans = t.estimate_quantile(0.01).unwrap();
-        let expected: f64 = 10_000.0;
-
-        let percentage: f64 = (expected - ans).abs() / expected;
-        assert!(percentage < 0.01);
-
-        let ans = t.estimate_quantile(0.5).unwrap();
-        let expected: f64 = 500_000.0;
-
-        let percentage: f64 = (expected - ans).abs() / expected;
-        assert!(percentage < 0.01);
+        let digest = TDigest::new_with_size(100).merge_unsorted(values);
+        assert_relative_error(&digest, 0.01, 10_000.0, 0.002);
+        assert_relative_error(&digest, 0.5, 500_000.0, 0.0003);
+        assert_eq!(digest.estimate_quantile(0.99), Some(1_000_000.0));
     }
 
     #[test]
@@ -869,17 +799,8 @@ mod tests {
 
         let t = TDigest::merge_digests(digests);
 
-        let ans = t.estimate_quantile(1.0).unwrap();
-        let expected: f64 = 1000.0;
-
-        let percentage: f64 = (expected - ans).abs() / expected;
-        assert!(percentage < 0.01);
-
-        let ans = t.estimate_quantile(0.99).unwrap();
-        let expected: f64 = 990.0;
-
-        let percentage: f64 = (expected - ans).abs() / expected;
-        assert!(percentage < 0.01);
+        assert_eq!(t.estimate_quantile(1.0), Some(1_000.0));
+        assert_relative_error(&t, 0.99, 990.0, 0.001);
 
         let ans = t.estimate_quantile(0.01).unwrap();
         let expected: f64 = 10.0;
@@ -887,17 +808,8 @@ mod tests {
         let percentage: f64 = (expected - ans).abs() / expected;
         assert!(percentage < 0.2);
 
-        let ans = t.estimate_quantile(0.0).unwrap();
-        let expected: f64 = 1.0;
-
-        let percentage: f64 = (expected - ans).abs() / expected;
-        assert!(percentage < 0.01);
-
-        let ans = t.estimate_quantile(0.5).unwrap();
-        let expected: f64 = 500.0;
-
-        let percentage: f64 = (expected - ans).abs() / expected;
-        assert!(percentage < 0.01);
+        assert_eq!(t.estimate_quantile(0.0), Some(1.0));
+        assert_relative_error(&t, 0.5, 500.0, 0.003);
     }
 
     #[test]
@@ -1162,6 +1074,56 @@ mod tests {
         assert!(!digest.is_empty());
     }
 
+    #[test]
+    fn test_identical_values_have_exact_quantiles() {
+        let digest = TDigest::new_with_size(100).merge_sorted(vec![42.0; 1_000]);
+        for q in [0.0, 0.01, 0.5, 0.99, 1.0] {
+            assert_eq!(digest.estimate_quantile(q), Some(42.0));
+        }
+    }
+
+    #[test]
+    fn test_small_max_sizes_are_bounded_and_monotonic() {
+        let values: Vec<f64> = (1..=10_000).map(f64::from).collect();
+        for max_size in [1, 2] {
+            let digest = TDigest::new_with_size(max_size).merge_sorted(values.clone());
+            let estimates: Vec<f64> = [0.0, 0.01, 0.5, 0.99, 1.0]
+                .iter()
+                .map(|q| digest.estimate_quantile(*q).unwrap())
+                .collect();
+            assert!(estimates.windows(2).all(|pair| pair[0] <= pair[1]));
+            assert!(estimates
+                .iter()
+                .all(|estimate| *estimate >= 1.0 && *estimate <= 10_000.0));
+        }
+    }
+
+    #[test]
+    fn test_two_value_interpolation() {
+        let digest = TDigest::new_with_size(100).merge_sorted(vec![1.0, 2.0]);
+        assert_eq!(digest.estimate_quantile(0.25), Some(1.0));
+        assert_eq!(digest.estimate_quantile(0.5), Some(1.5));
+        assert_eq!(digest.estimate_quantile(0.75), Some(2.0));
+    }
+
+    #[test]
+    fn test_large_finite_values_keep_quantiles_monotonic() {
+        let values = vec![
+            -2.8628752183724026e47,
+            -1.7976929533361517e308,
+            1.09617609205896e-309,
+            -1.3683081283749273e304,
+            0.0,
+        ];
+        let digest = TDigest::new_with_size(2).merge_unsorted(values);
+        let estimates: Vec<f64> = [0.0, 0.5, 1.0]
+            .iter()
+            .map(|q| digest.estimate_quantile(*q).unwrap())
+            .collect();
+        assert!(estimates.iter().all(|estimate| estimate.is_finite()));
+        assert!(estimates.windows(2).all(|pair| pair[0] <= pair[1]));
+    }
+
     #[cfg(feature = "use_serde")]
     #[test]
     fn test_serde_round_trip() {
@@ -1194,5 +1156,100 @@ mod tests {
         let serialized = serde_json::to_string(&digest).unwrap();
         let deserialized: TDigest = serde_json::from_str(&serialized).unwrap();
         assert_eq!(digest, deserialized);
+    }
+
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        fn finite_values() -> impl Strategy<Value = Vec<f64>> {
+            prop::collection::vec(-1e9f64..1e9, 1..2000)
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig { cases: 64, .. ProptestConfig::default() })]
+
+            #[test]
+            fn quantile_estimates_are_monotonic(values in finite_values()) {
+                let digest = TDigest::new_with_size(100).merge_unsorted(values);
+                let quantiles = [0.0, 0.01, 0.1, 0.25, 0.5, 0.75, 0.9, 0.99, 1.0];
+                let estimates: Vec<f64> = quantiles
+                    .iter()
+                    .map(|q| digest.estimate_quantile(*q).unwrap())
+                    .collect();
+                prop_assert!(estimates.windows(2).all(|pair| pair[0] <= pair[1]));
+            }
+
+            #[test]
+            fn quantile_estimates_stay_within_bounds(values in finite_values()) {
+                let digest = TDigest::new_with_size(100).merge_unsorted(values);
+                let min = digest.min().unwrap();
+                let max = digest.max().unwrap();
+                for q in [0.0, 0.01, 0.5, 0.99, 1.0] {
+                    let estimate = digest.estimate_quantile(q).unwrap();
+                    prop_assert!(estimate >= min && estimate <= max);
+                }
+                prop_assert_eq!(digest.estimate_quantile(0.0), Some(min));
+                prop_assert_eq!(digest.estimate_quantile(1.0), Some(max));
+            }
+
+            #[test]
+            fn chunked_merges_conserve_count_and_sum(
+                values in finite_values(),
+                chunk_size in 1usize..128,
+            ) {
+                let expected_sum: f64 = values.iter().sum();
+                let absolute_scale: f64 = values.iter().map(|value| value.abs()).sum::<f64>().max(1.0);
+                let mut digest = TDigest::new_with_size(100);
+                for chunk in values.chunks(chunk_size) {
+                    digest = digest.merge_unsorted(chunk.to_vec());
+                }
+                prop_assert_eq!(digest.count(), values.len() as f64);
+                prop_assert!((digest.sum() - expected_sum).abs() <= 1e-6 * absolute_scale);
+            }
+
+            #[test]
+            fn merge_paths_have_similar_medians(
+                values in finite_values(),
+                chunk_size in 1usize..128,
+            ) {
+                let whole = TDigest::new_with_size(100).merge_unsorted(values.clone());
+                let partials = values
+                    .chunks(chunk_size)
+                    .map(|chunk| TDigest::new_with_size(100).merge_unsorted(chunk.to_vec()))
+                    .collect();
+                let merged = TDigest::merge_digests(partials);
+                let expected = whole.estimate_quantile(0.5).unwrap();
+                let estimate = merged.estimate_quantile(0.5).unwrap();
+                let range = whole.max().unwrap() - whole.min().unwrap();
+                let scale = expected.abs().max(range * 0.1).max(1.0);
+                prop_assert!((estimate - expected).abs() <= scale * 0.1);
+            }
+
+            #[test]
+            fn rank_quantile_round_trip(
+                values in finite_values(),
+                q in 0.05f64..=0.95,
+            ) {
+                let digest = TDigest::new_with_size(100).merge_unsorted(values);
+                prop_assume!(digest.count() >= 10.0 && digest.min() != digest.max());
+                let estimate = digest.estimate_quantile(q).unwrap();
+                let rank = digest.estimate_rank(estimate).unwrap();
+                prop_assert!((rank - q).abs() <= 0.1);
+            }
+
+            #[cfg(feature = "use_serde")]
+            #[test]
+            fn serde_round_trip_preserves_estimates(values in finite_values()) {
+                let digest = TDigest::new_with_size(100).merge_unsorted(values);
+                let serialized = serde_json::to_string(&digest).unwrap();
+                let restored: TDigest = serde_json::from_str(&serialized).unwrap();
+                for q in [0.01, 0.5, 0.99] {
+                    let expected = digest.estimate_quantile(q).unwrap();
+                    let estimate = restored.estimate_quantile(q).unwrap();
+                    prop_assert!((estimate - expected).abs() <= expected.abs().max(1.0) * 1e-12);
+                }
+            }
+        }
     }
 }

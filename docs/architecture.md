@@ -31,6 +31,10 @@ The `add` method merges additional weight into a centroid, updating its mean inc
 new_mean = (old_weight * old_mean + added_sum) / (old_weight + added_weight)
 ```
 
+Internal compression combines centroid means with normalized weights instead of
+forming the full weighted sum first. This avoids intermediate overflow for very
+large finite inputs while preserving the same result at ordinary magnitudes.
+
 ### `TDigest`
 
 The digest itself holds a sorted vector of centroids plus summary statistics:
