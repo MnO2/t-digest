@@ -16,7 +16,7 @@ This implementation follows Facebook's [folly TDigest](https://github.com/facebo
 - **Mergeable** -- combine digests computed on different machines or threads
 - **Compact** -- fixed memory footprint regardless of input size
 - **No dependencies** by default (optional `serde` support behind a feature flag)
-- **`no_std`-friendly** when serde is disabled
+- **`no_std` + `alloc` support**, including serde without its `std` feature
 
 ## Installation
 
@@ -31,11 +31,13 @@ tdigest = "1.0"
 
 | Feature | Description |
 |-------------|------------------------------------------------|
-| `use_serde` | Enables `Serialize`/`Deserialize` for `TDigest` and `Centroid` |
+| `std` | Enabled by default; disable it for `no_std` builds |
+| `serde` | Enables `Serialize`/`Deserialize` for `TDigest` and `Centroid` |
+| `use_serde` | Deprecated compatibility alias for `serde` |
 
 ```toml
 [dependencies]
-tdigest = { version = "1.0", features = ["use_serde"] }
+tdigest = { version = "1.0", features = ["serde"] }
 ```
 
 ## Quick start
@@ -137,7 +139,8 @@ let p99 = combined.estimate_quantile(0.99);
 
 ### Serialization (serde)
 
-Enable the `use_serde` feature, then use any serde-compatible format:
+Enable the `serde` feature, then use any serde-compatible format. The deprecated
+`use_serde` alias remains available for existing users.
 
 ```rust
 use tdigest::TDigest;
@@ -165,6 +168,24 @@ Larger values produce more centroids, giving better accuracy at the cost of more
 ## Minimum Supported Rust Version (MSRV)
 
 Rust **1.62** -- verified in CI.
+
+## `no_std`
+
+Disable default features to use the crate with `alloc` but without `std`:
+
+```toml
+[dependencies]
+tdigest = { version = "1.0", default-features = false }
+```
+
+Serde also works in this configuration by adding `features = ["serde"]`.
+
+## Accuracy
+
+Run `cargo run --release --example accuracy` to compare estimated and exact
+quantiles across deterministic uniform, normal, lognormal, exponential, bimodal,
+and adversarial distributions. See [architecture and internals](docs/architecture.md#measured-accuracy)
+for a summary of the measured error profile.
 
 ## Benchmarks
 

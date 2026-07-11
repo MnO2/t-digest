@@ -12,16 +12,32 @@ rust-version = "1.62"
 
 [dependencies]
 serde = { package = "serde", version = "1.0", optional = true, default-features = false }
+# Keep serde's derive implementation on versions compatible with the crate MSRV.
+proc-macro2 = { version = "=1.0.83", optional = true, default-features = false }
+quote = { version = "=1.0.35", optional = true, default-features = false }
+syn = { version = "=2.0.81", optional = true, default-features = false }
+unicode-ident = { version = "=1.0.12", optional = true }
 
 [dev-dependencies]
-criterion = "=0.4.0"
+criterion = { version = "=0.4.0", default-features = false, features = ["cargo_bench_support"] }
 proptest = { version = "=1.0.0", default-features = false, features = ["std"] }
 rand = "=0.8.5"
 rand_distr = "=0.4.3"
 serde_json = "1.0"
 
 [features]
-use_serde = ["serde", "serde/derive", "serde/std"]
+default = ["std"]
+std = ["serde?/std"]
+serde = [
+    "dep:serde",
+    "serde/derive",
+    "serde/alloc",
+    "dep:proc-macro2",
+    "dep:quote",
+    "dep:syn",
+    "dep:unicode-ident",
+]
+use_serde = ["serde"]
 
 [[bench]]
 name = "tdigest"

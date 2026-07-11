@@ -176,9 +176,16 @@ median, which is useful as a regression signal for future interpolation work.
 
 ## Serde support
 
-When the `use_serde` feature is enabled, both `TDigest` and `Centroid` derive `Serialize` and `Deserialize`. This allows digests to be stored, transmitted over the network, or checkpointed. The `serde` dependency is compiled with `std` support to avoid issues with `f64` serialization.
+When the `serde` feature is enabled, both `TDigest` and `Centroid` derive `Serialize` and `Deserialize`. The deprecated `use_serde` feature is a compatibility alias. Serde uses its `alloc` support and also works when this crate's default `std` feature is disabled.
 
 Note: the wire format changed in 1.0.0 (`min`/`max` changed from `f64` with NaN sentinel to `Option<f64>`). Data from older versions requires migration.
+
+## `no_std` support
+
+The library is always compiled with `#![no_std]` and uses `alloc::vec::Vec` for
+storage. The default `std` feature preserves the conventional host build and
+enables serde's `std` support when serde is active. Building with
+`--no-default-features` requires only an allocator.
 
 ## Error handling
 

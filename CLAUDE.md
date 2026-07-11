@@ -10,14 +10,17 @@ This is `tdigest`, a Rust implementation of the t-digest data structure for accu
 cargo build                  # Build with default features
 cargo build --all-features   # Build with serde support
 cargo test --all-features    # Run all tests including serde round-trip
+cargo test --features serde  # Test the preferred serde feature
+cargo test --features use_serde # Test the compatibility alias
 cargo fmt --all -- --check   # Check formatting
 cargo check --all-features   # Type-check only
+cargo check --no-default-features # Verify no_std + alloc
 ```
 
 ## Project structure
 
 - `src/lib.rs` -- entire library: `Centroid`, `TDigest`, all methods, and all tests
-- `Cargo.toml` -- package metadata, MSRV 1.62, optional `use_serde` feature
+- `Cargo.toml` -- package metadata, MSRV 1.62, default `std`, optional `serde`, and compatibility `use_serde` features
 - `docs/architecture.md` -- algorithm and architecture documentation
 - `rustfmt.toml` -- max_width = 120
 
@@ -29,9 +32,10 @@ cargo check --all-features   # Type-check only
 - `#[must_use]` on methods returning new values
 - `#[non_exhaustive]` on public structs
 - `debug_assert` for invariant checks (NaN rejection, min/max presence)
-- No external dependencies by default; `serde` is behind the `use_serde` feature flag
+- No external dependencies by default; serde is behind the `serde` feature, with `use_serde` as a deprecated alias
+- The library is `no_std` and uses `alloc`; the default `std` feature preserves existing behavior
 - Formatting: rustfmt with max_width=120
 
 ## CI
 
-GitHub Actions (`.github/workflows/CI.yml`): check, test (ubuntu/macos/windows), MSRV (1.62), code coverage (tarpaulin + codecov), rustfmt.
+GitHub Actions (`.github/workflows/CI.yml`): check, test (ubuntu/macos/windows), MSRV (1.62), no_std, clippy, rustdoc warnings, semver checks, code coverage (tarpaulin + codecov), and rustfmt. Fuzzing is a separate manual workflow.

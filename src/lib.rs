@@ -1,3 +1,6 @@
+#![no_std]
+#![deny(missing_docs)]
+
 //! T-Digest algorithm in rust
 //!
 //! ## Installation
@@ -32,15 +35,23 @@
 //! ingestion methods check this in debug builds, but estimates are unspecified
 //! if non-finite values are supplied to a release build.
 
-use std::cmp::Ordering;
-use std::mem;
+extern crate alloc;
 
-#[cfg(feature = "use_serde")]
+#[cfg(test)]
+extern crate std;
+
+use alloc::vec;
+use alloc::vec::Vec;
+use core::cmp::Ordering;
+use core::iter::FromIterator;
+use core::mem;
+
+#[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
 /// Centroid implementation to the cluster mentioned in the paper.
 #[derive(Debug, Clone, Copy)]
-#[cfg_attr(feature = "use_serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[non_exhaustive]
 pub struct Centroid {
     mean: f64,
@@ -68,21 +79,28 @@ impl Ord for Centroid {
 impl Eq for Centroid {}
 
 impl Centroid {
+    /// Create a centroid with the given mean and weight.
+    #[must_use]
     pub fn new(mean: f64, weight: f64) -> Self {
         debug_assert!(mean.is_finite() && weight.is_finite(), "mean and weight must be finite");
         Centroid { mean, weight }
     }
 
     #[inline]
+    /// Return this centroid's mean.
+    #[must_use]
     pub fn mean(&self) -> f64 {
         self.mean
     }
 
     #[inline]
+    /// Return the number of samples represented by this centroid.
+    #[must_use]
     pub fn weight(&self) -> f64 {
         self.weight
     }
 
+    /// Add a weighted `sum` and `weight`, returning the combined sum.
     pub fn add(&mut self, sum: f64, weight: f64) -> f64 {
         let new_sum: f64 = sum + self.weight * self.mean;
         let new_weight: f64 = self.weight + weight;
@@ -116,8 +134,11 @@ impl Default for Centroid {
 /// using the mutable ingestion API. The pending buffer is deliberately omitted
 /// from serde output, so serializing an unflushed digest produces an incomplete
 /// digest.
+///
+/// Queries that need data return `None` when the digest is empty. Summary
+/// accessors such as [`TDigest::count`] and [`TDigest::sum`] return zero.
 #[derive(Debug, PartialEq, Clone)]
-#[cfg_attr(feature = "use_serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[non_exhaustive]
 pub struct TDigest {
     centroids: Vec<Centroid>,
@@ -126,13 +147,23 @@ pub struct TDigest {
     count: f64,
     max: Option<f64>,
     min: Option<f64>,
-    #[cfg_attr(feature = "use_serde", serde(skip, default))]
+    #[cfg_attr(feature = "serde", serde(skip, default))]
     buffer: Vec<f64>,
 }
 
 const BUFFER_FACTOR: usize = 5;
 
 impl TDigest {
+    /// Create an empty digest with the requested compression size.
+    ///
+    /// Larger sizes retain more centroids and generally improve accuracy.
+    ///
+    /// ```
+    /// use tdigest::TDigest;
+    ///
+    /// let digest = TDigest::new_with_size(200);
+    /// assert_eq!(digest.max_size(), 200);
+    /// ```
     #[must_use]
     pub fn new_with_size(max_size: usize) -> Self {
         TDigest {
@@ -146,6 +177,9 @@ impl TDigest {
         }
     }
 
+    /// Construct a digest from existing centroids and summary statistics.
+    ///
+    /// If there are more centroids than `max_size`, they are recompressed.
     #[must_use]
     pub fn new(
         centroids: Vec<Centroid>,
@@ -185,6 +219,7 @@ impl TDigest {
 
     #[inline]
     #[must_use]
+    /// Return the arithmetic mean, or `None` when the digest is empty.
     pub fn mean(&self) -> Option<f64> {
         if self.count > 0.0 {
             Some(self.sum / self.count)
@@ -194,6 +229,8 @@ impl TDigest {
     }
 
     #[inline]
+    /// Return the sum of all inserted values.
+    #[must_use]
     pub fn sum(&self) -> f64 {
         self.sum
     }
@@ -202,33 +239,44 @@ impl TDigest {
     /// Return the number of inserted values as an `f64`.
     ///
     /// Integer counts are represented exactly up to 2^53.
+    #[must_use]
     pub fn count(&self) -> f64 {
         self.count
     }
 
     #[inline]
+    /// Return the greatest inserted value, or `None` when empty.
+    #[must_use]
     pub fn max(&self) -> Option<f64> {
         self.max
     }
 
     #[inline]
+    /// Return the least inserted value, or `None` when empty.
+    #[must_use]
     pub fn min(&self) -> Option<f64> {
         self.min
     }
 
     #[inline]
     #[must_use]
+    /// Return whether no values have been inserted.
     pub fn is_empty(&self) -> bool {
         self.count == 0.0
     }
 
     #[inline]
+    /// Return the configured compression size.
+    #[must_use]
     pub fn max_size(&self) -> usize {
         self.max_size
     }
 
     #[inline]
     #[must_use]
+    /// Return the compressed centroids in ascending mean order.
+    ///
+    /// Call [`TDigest::flush`] first after mutable ingestion.
     pub fn centroids(&self) -> &[Centroid] {
         debug_assert!(self.buffer.is_empty(), "flush buffered values before reading centroids");
         &self.centroids
@@ -325,6 +373,14 @@ impl TDigest {
         *self = result;
     }
 
+    /// Merge unsorted values into a new digest, sorting them internally.
+    ///
+    /// ```
+    /// use tdigest::TDigest;
+    ///
+    /// let digest = TDigest::default().merge_unsorted(vec![3.0, 1.0, 2.0]);
+    /// assert_eq!(digest.estimate_quantile(0.5), Some(2.0));
+    /// ```
     #[must_use]
     pub fn merge_unsorted(&self, unsorted_values: Vec<f64>) -> TDigest {
         debug_assert!(self.buffer.is_empty(), "flush buffered values before immutable merges");
@@ -337,6 +393,14 @@ impl TDigest {
         self.merge_sorted(sorted_values)
     }
 
+    /// Merge ascending values into a new digest.
+    ///
+    /// ```
+    /// use tdigest::TDigest;
+    ///
+    /// let digest = TDigest::default().merge_sorted(vec![1.0, 2.0, 3.0]);
+    /// assert_eq!(digest.count(), 3.0);
+    /// ```
     #[must_use]
     pub fn merge_sorted(&self, sorted_values: Vec<f64>) -> TDigest {
         debug_assert!(self.buffer.is_empty(), "flush buffered values before immutable merges");
@@ -438,6 +502,15 @@ impl TDigest {
     ///
     /// The result uses the largest `max_size` among the inputs. With no inputs,
     /// this returns a digest with the default size of 100.
+    ///
+    /// ```
+    /// use tdigest::TDigest;
+    ///
+    /// let left = TDigest::default().merge_sorted(vec![1.0, 2.0]);
+    /// let right = TDigest::default().merge_sorted(vec![3.0, 4.0]);
+    /// let merged = TDigest::merge_digests(vec![left, right]);
+    /// assert_eq!(merged.count(), 4.0);
+    /// ```
     #[must_use]
     pub fn merge_digests(digests: Vec<TDigest>) -> TDigest {
         debug_assert!(
@@ -515,7 +588,15 @@ impl TDigest {
     }
 
     /// Estimate the value at quantile `q` (0.0 to 1.0).
-    /// Returns `None` if the digest is empty.
+    /// Returns `None` if the digest is empty. Values below zero return the
+    /// minimum; values above one return the maximum.
+    ///
+    /// ```
+    /// use tdigest::TDigest;
+    ///
+    /// let digest = TDigest::default().merge_sorted(vec![1.0, 2.0, 3.0]);
+    /// assert_eq!(digest.estimate_quantile(0.5), Some(2.0));
+    /// ```
     #[must_use]
     pub fn estimate_quantile(&self, q: f64) -> Option<f64> {
         debug_assert!(
@@ -653,6 +734,14 @@ impl TDigest {
     /// than or equal to it.
     ///
     /// Returns `None` if the digest is empty.
+    ///
+    /// ```
+    /// use tdigest::TDigest;
+    ///
+    /// let digest = TDigest::default().merge_sorted((1..=100).map(f64::from).collect());
+    /// let median_rank = digest.estimate_rank(50.0).unwrap();
+    /// assert!((median_rank - 0.5).abs() < 0.05);
+    /// ```
     #[must_use]
     pub fn estimate_rank(&self, value: f64) -> Option<f64> {
         debug_assert!(self.buffer.is_empty(), "flush buffered values before estimating ranks");
@@ -717,6 +806,13 @@ impl TDigest {
     ///
     /// Quantiles are clamped to `[0.0, 1.0]`. Returns `None` if the digest is
     /// empty, either bound is NaN, or the resulting interval is empty.
+    ///
+    /// ```
+    /// use tdigest::TDigest;
+    ///
+    /// let digest = TDigest::default().merge_sorted((1..=100).map(f64::from).collect());
+    /// assert!((digest.trimmed_mean(0.1, 0.9).unwrap() - 50.5).abs() < 1.0);
+    /// ```
     #[must_use]
     pub fn trimmed_mean(&self, lo: f64, hi: f64) -> Option<f64> {
         debug_assert!(
@@ -820,9 +916,7 @@ mod tests {
     #[test]
     fn test_merge_sorted_against_skewed_distro() {
         let mut values: Vec<f64> = (1..=600_000).map(f64::from).collect();
-        for _ in 0..400_000 {
-            values.push(1_000_000.0);
-        }
+        values.resize(1_000_000, 1_000_000.0);
 
         let digest = TDigest::new_with_size(100).merge_sorted(values);
         assert_relative_error(&digest, 0.01, 10_000.0, 0.002);
@@ -833,9 +927,7 @@ mod tests {
     #[test]
     fn test_merge_unsorted_against_skewed_distro() {
         let mut values: Vec<f64> = (1..=600_000).map(f64::from).collect();
-        for _ in 0..400_000 {
-            values.push(1_000_000.0);
-        }
+        values.resize(1_000_000, 1_000_000.0);
 
         let digest = TDigest::new_with_size(100).merge_unsorted(values);
         assert_relative_error(&digest, 0.01, 10_000.0, 0.002);
@@ -1192,7 +1284,7 @@ mod tests {
         assert!(estimates.windows(2).all(|pair| pair[0] <= pair[1]));
     }
 
-    #[cfg(feature = "use_serde")]
+    #[cfg(feature = "serde")]
     #[test]
     fn test_serde_round_trip() {
         let t = TDigest::new_with_size(100);
@@ -1212,7 +1304,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "use_serde")]
+    #[cfg(feature = "serde")]
     #[test]
     fn test_serde_skips_pending_buffer() {
         let mut digest = TDigest::default();
@@ -1229,6 +1321,7 @@ mod tests {
     mod proptests {
         use super::*;
         use proptest::prelude::*;
+        use std::format;
 
         fn finite_values() -> impl Strategy<Value = Vec<f64>> {
             prop::collection::vec(-1e9f64..1e9, 1..2000)
@@ -1306,7 +1399,7 @@ mod tests {
                 prop_assert!((rank - q).abs() <= 0.1);
             }
 
-            #[cfg(feature = "use_serde")]
+            #[cfg(feature = "serde")]
             #[test]
             fn serde_round_trip_preserves_estimates(values in finite_values()) {
                 let digest = TDigest::new_with_size(100).merge_unsorted(values);

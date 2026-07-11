@@ -2,6 +2,32 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- Deterministic Criterion benchmarks and an accuracy harness covering six distributions.
+- Buffered mutable ingestion with `push`, `extend_values`, `flush`, `Extend`, and `FromIterator`.
+- `estimate_rank`, `trimmed_mean`, and bulk `quantiles` queries.
+- Property tests, a cargo-fuzz target, and a manual fuzzing workflow.
+- `no_std` + `alloc` support behind a default `std` feature.
+- Clippy, rustdoc-warning, no-std, and semver CI gates.
+
+### Changed
+
+- `merge_digests` now uses the largest input `max_size`.
+- Finite-input checks cover public ingestion boundaries in debug builds.
+- Unsorted ingestion and buffered flushes use unstable sorting.
+- Documentation warnings are denied for public API items.
+
+### Fixed
+
+- Stable centroid averaging prevents intermediate overflow from breaking quantile monotonicity for large finite values.
+
+### Deprecated
+
+- `use_serde` remains as a compatibility alias; new users should enable `serde`.
+
 ## [1.0.0] - 2026-04-04
 
 ### Breaking Changes
