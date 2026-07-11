@@ -146,6 +146,18 @@ for batch in batches {
 }
 ```
 
+## Measured accuracy
+
+Run `cargo run --release --example accuracy` to compare estimates with exact
+quantiles for one million deterministic samples from six distributions. With
+`max_size = 100`, central quantiles on smooth distributions generally have
+relative error around 1e-4. At the extreme 0.0001 and 0.9999 quantiles, skewed
+distributions can reach errors on the order of 1e-2 to 1e-1. Merging 100 partial
+digests increases some extreme-tail errors; near zero, consult absolute error
+because relative error exaggerates very small differences. A deliberately
+bimodal distribution also exposes interpolation across the gap around its
+median, which is useful as a regression signal for future interpolation work.
+
 ## Serde support
 
 When the `use_serde` feature is enabled, both `TDigest` and `Centroid` derive `Serialize` and `Deserialize`. This allows digests to be stored, transmitted over the network, or checkpointed. The `serde` dependency is compiled with `std` support to avoid issues with `f64` serialization.

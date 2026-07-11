@@ -152,6 +152,13 @@ Larger values produce more centroids, giving better accuracy at the cost of more
 
 Rust **1.62** -- verified in CI.
 
+## Benchmarks
+
+Run `cargo bench` to measure sorted and unsorted batch ingestion, incremental
+ingestion, digest merging, quantile queries, and compression-size sensitivity.
+The benchmark inputs use fixed random seeds so results can be compared across
+changes. Run `cargo run --release --example accuracy` for the accuracy harness.
+
 ## Documentation
 
 - [API docs on docs.rs](https://docs.rs/tdigest)

@@ -12,7 +12,8 @@ depends on this existing first.
 - Add to `Cargo.toml`:
   ```toml
   [dev-dependencies]
-  criterion = "0.5"
+  # Criterion 0.5 requires Rust 1.64; keep the crate's Rust 1.62 MSRV.
+  criterion = "=0.4.0"
   rand = "0.8"
 
   [[bench]]
