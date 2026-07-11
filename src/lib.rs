@@ -33,6 +33,7 @@
 //! if non-finite values are supplied to a release build.
 
 use std::cmp::Ordering;
+use std::mem;
 
 #[cfg(feature = "use_serde")]
 use serde::{Deserialize, Serialize};
@@ -98,6 +99,11 @@ impl Default for Centroid {
 }
 
 /// T-Digest to be operated on.
+///
+/// Call [`TDigest::flush`] before centroid-based queries or serialization after
+/// using the mutable ingestion API. The pending buffer is deliberately omitted
+/// from serde output, so serializing an unflushed digest produces an incomplete
+/// digest.
 #[derive(Debug, PartialEq, Clone)]
 #[cfg_attr(feature = "use_serde", derive(Serialize, Deserialize))]
 #[non_exhaustive]
@@ -108,7 +114,11 @@ pub struct TDigest {
     count: f64,
     max: Option<f64>,
     min: Option<f64>,
+    #[cfg_attr(feature = "use_serde", serde(skip, default))]
+    buffer: Vec<f64>,
 }
+
+const BUFFER_FACTOR: usize = 5;
 
 impl TDigest {
     #[must_use]
@@ -120,6 +130,7 @@ impl TDigest {
             count: 0.0,
             max: None,
             min: None,
+            buffer: Vec::with_capacity(BUFFER_FACTOR * max_size),
         }
     }
 
@@ -147,6 +158,7 @@ impl TDigest {
                 count,
                 max,
                 min,
+                buffer: Vec::with_capacity(BUFFER_FACTOR * max_size),
             }
         } else {
             let sz = centroids.len();
@@ -192,7 +204,7 @@ impl TDigest {
     #[inline]
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.centroids.is_empty()
+        self.count == 0.0
     }
 
     #[inline]
@@ -203,6 +215,7 @@ impl TDigest {
     #[inline]
     #[must_use]
     pub fn centroids(&self) -> &[Centroid] {
+        debug_assert!(self.buffer.is_empty(), "flush buffered values before reading centroids");
         &self.centroids
     }
 }
@@ -216,7 +229,23 @@ impl Default for TDigest {
             count: 0.0,
             max: None,
             min: None,
+            buffer: Vec::with_capacity(BUFFER_FACTOR * 100),
         }
+    }
+}
+
+impl Extend<f64> for TDigest {
+    fn extend<T: IntoIterator<Item = f64>>(&mut self, iter: T) {
+        self.extend_values(iter);
+    }
+}
+
+impl FromIterator<f64> for TDigest {
+    fn from_iter<T: IntoIterator<Item = f64>>(iter: T) -> Self {
+        let mut digest = TDigest::default();
+        digest.extend_values(iter);
+        digest.flush();
+        digest
     }
 }
 
@@ -231,8 +260,59 @@ impl TDigest {
         }
     }
 
+    /// Insert one value into this digest.
+    ///
+    /// Values are buffered and compressed automatically. Call [`TDigest::flush`]
+    /// before estimating quantiles or reading centroids.
+    ///
+    /// ```
+    /// use tdigest::TDigest;
+    ///
+    /// let mut digest = TDigest::new_with_size(100);
+    /// digest.push(1.0);
+    /// digest.push(2.0);
+    /// digest.flush();
+    /// assert_eq!(digest.estimate_quantile(0.5), Some(1.5));
+    /// ```
+    pub fn push(&mut self, value: f64) {
+        debug_assert!(value.is_finite(), "input values must be finite");
+        self.count += 1.0;
+        self.sum += value;
+        self.min = Some(self.min.map_or(value, |current| current.min(value)));
+        self.max = Some(self.max.map_or(value, |current| current.max(value)));
+        self.buffer.push(value);
+
+        if self.buffer.len() >= BUFFER_FACTOR.saturating_mul(self.max_size).max(1) {
+            self.flush();
+        }
+    }
+
+    /// Insert several values using the mutable buffered ingestion path.
+    pub fn extend_values(&mut self, values: impl IntoIterator<Item = f64>) {
+        for value in values {
+            self.push(value);
+        }
+    }
+
+    /// Compress pending buffered values into this digest's centroids.
+    ///
+    /// This is a no-op when the buffer is empty.
+    pub fn flush(&mut self) {
+        if self.buffer.is_empty() {
+            return;
+        }
+
+        let mut buffer = mem::take(&mut self.buffer);
+        buffer.sort_unstable_by(f64::total_cmp);
+        let mut result = self.compress_sorted(&buffer, self.count, self.min, self.max, Some(self.sum));
+        buffer.clear();
+        result.buffer = buffer;
+        *self = result;
+    }
+
     #[must_use]
     pub fn merge_unsorted(&self, unsorted_values: Vec<f64>) -> TDigest {
+        debug_assert!(self.buffer.is_empty(), "flush buffered values before immutable merges");
         debug_assert!(
             unsorted_values.iter().all(|value| value.is_finite()),
             "input values must be finite"
@@ -244,6 +324,7 @@ impl TDigest {
 
     #[must_use]
     pub fn merge_sorted(&self, sorted_values: Vec<f64>) -> TDigest {
+        debug_assert!(self.buffer.is_empty(), "flush buffered values before immutable merges");
         debug_assert!(
             sorted_values.iter().all(|value| value.is_finite()),
             "input values must be finite"
@@ -252,19 +333,38 @@ impl TDigest {
             return self.clone();
         }
 
-        let mut result = TDigest::new_with_size(self.max_size());
-        result.count = self.count() + (sorted_values.len() as f64);
-
         let maybe_min = *sorted_values.first().unwrap();
         let maybe_max = *sorted_values.last().unwrap();
-
-        if self.count() > 0.0 {
-            result.min = Some(self.min.unwrap().min(maybe_min));
-            result.max = Some(self.max.unwrap().max(maybe_max));
+        let (min, max) = if self.count() > 0.0 {
+            (
+                Some(self.min.unwrap().min(maybe_min)),
+                Some(self.max.unwrap().max(maybe_max)),
+            )
         } else {
-            result.min = Some(maybe_min);
-            result.max = Some(maybe_max);
-        }
+            (Some(maybe_min), Some(maybe_max))
+        };
+
+        self.compress_sorted(
+            &sorted_values,
+            self.count() + sorted_values.len() as f64,
+            min,
+            max,
+            None,
+        )
+    }
+
+    fn compress_sorted(
+        &self,
+        sorted_values: &[f64],
+        count: f64,
+        min: Option<f64>,
+        max: Option<f64>,
+        sum_override: Option<f64>,
+    ) -> TDigest {
+        let mut result = TDigest::new_with_size(self.max_size());
+        result.count = count;
+        result.min = min;
+        result.max = max;
 
         let mut compressed: Vec<Centroid> = Vec::with_capacity(self.max_size);
 
@@ -326,6 +426,9 @@ impl TDigest {
         compressed.sort();
 
         result.centroids = compressed;
+        if let Some(sum) = sum_override {
+            result.sum = sum;
+        }
         result
     }
 
@@ -335,6 +438,10 @@ impl TDigest {
     /// this returns a digest with the default size of 100.
     #[must_use]
     pub fn merge_digests(digests: Vec<TDigest>) -> TDigest {
+        debug_assert!(
+            digests.iter().all(|digest| digest.buffer.is_empty()),
+            "flush buffered values before merging digests"
+        );
         let max_size = digests.iter().map(TDigest::max_size).max().unwrap_or(100);
         let n_centroids: usize = digests.iter().map(|d| d.centroids.len()).sum();
         if n_centroids == 0 {
@@ -413,6 +520,10 @@ impl TDigest {
     /// Returns `None` if the digest is empty.
     #[must_use]
     pub fn estimate_quantile(&self, q: f64) -> Option<f64> {
+        debug_assert!(
+            self.buffer.is_empty(),
+            "flush buffered values before estimating quantiles"
+        );
         if self.centroids.is_empty() {
             return None;
         }
@@ -484,6 +595,7 @@ impl TDigest {
     /// Returns `None` if the digest is empty.
     #[must_use]
     pub fn estimate_rank(&self, value: f64) -> Option<f64> {
+        debug_assert!(self.buffer.is_empty(), "flush buffered values before estimating ranks");
         debug_assert!(!value.is_nan(), "value must not be NaN");
         if self.centroids.is_empty() {
             return None;
@@ -547,6 +659,10 @@ impl TDigest {
     /// empty, either bound is NaN, or the resulting interval is empty.
     #[must_use]
     pub fn trimmed_mean(&self, lo: f64, hi: f64) -> Option<f64> {
+        debug_assert!(
+            self.buffer.is_empty(),
+            "flush buffered values before estimating trimmed means"
+        );
         if self.centroids.is_empty() || lo.is_nan() || hi.is_nan() || lo >= hi {
             return None;
         }
@@ -969,6 +1085,83 @@ mod tests {
         assert!(merged.centroids().len() <= 500);
     }
 
+    #[test]
+    fn test_push_uniform_values() {
+        let mut digest = TDigest::new_with_size(100);
+        for value in 1..=1_000_000 {
+            digest.push(f64::from(value));
+        }
+        digest.flush();
+
+        for (q, expected) in [(0.01, 10_000.0), (0.5, 500_000.0), (0.99, 990_000.0)] {
+            let estimate = digest.estimate_quantile(q).unwrap();
+            assert!(
+                (estimate - expected).abs() / expected < 0.02,
+                "q={q}, expected={expected}, estimate={estimate}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_push_matches_batch_ingestion() {
+        let values: Vec<f64> = (1..=100_000).map(f64::from).collect();
+        let batch = TDigest::new_with_size(100).merge_sorted(values.clone());
+        let mut streamed = TDigest::new_with_size(100);
+        streamed.extend_values(values);
+        streamed.flush();
+
+        for q in [0.01, 0.5, 0.99] {
+            let expected = batch.estimate_quantile(q).unwrap();
+            let estimate = streamed.estimate_quantile(q).unwrap();
+            assert!((estimate - expected).abs() / expected < 0.01);
+        }
+    }
+
+    #[test]
+    fn test_push_buffer_boundary_and_eager_summaries() {
+        let max_size = 10;
+        let capacity = BUFFER_FACTOR * max_size;
+        let mut digest = TDigest::new_with_size(max_size);
+        for value in 1..=capacity {
+            digest.push(value as f64);
+            assert_eq!(digest.count(), value as f64);
+            assert_eq!(digest.min(), Some(1.0));
+            assert_eq!(digest.max(), Some(value as f64));
+        }
+        assert!(digest.buffer.is_empty());
+
+        digest.push((capacity + 1) as f64);
+        assert_eq!(digest.buffer.len(), 1);
+        assert_eq!(digest.count(), (capacity + 1) as f64);
+        assert_eq!(digest.min(), Some(1.0));
+        assert_eq!(digest.max(), Some((capacity + 1) as f64));
+    }
+
+    #[test]
+    fn test_mutable_collection_traits() {
+        let mut extended = TDigest::default();
+        extended.extend([1.0, 2.0, 3.0]);
+        assert_eq!(extended.count(), 3.0);
+        extended.flush();
+        assert_eq!(extended.estimate_quantile(0.5), Some(2.0));
+
+        let collected: TDigest = [1.0, 2.0, 3.0].into_iter().collect();
+        assert_eq!(collected.count(), 3.0);
+        assert_eq!(collected.estimate_quantile(0.5), Some(2.0));
+    }
+
+    #[test]
+    fn test_unflushed_summary_queries() {
+        let mut digest = TDigest::default();
+        digest.extend_values([1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(digest.count(), 4.0);
+        assert_eq!(digest.sum(), 10.0);
+        assert_eq!(digest.mean(), Some(2.5));
+        assert_eq!(digest.min(), Some(1.0));
+        assert_eq!(digest.max(), Some(4.0));
+        assert!(!digest.is_empty());
+    }
+
     #[cfg(feature = "use_serde")]
     #[test]
     fn test_serde_round_trip() {
@@ -987,5 +1180,19 @@ mod tests {
         for q in &[0.1, 0.5, 0.9, 0.99] {
             assert_eq!(t.estimate_quantile(*q), deserialized.estimate_quantile(*q));
         }
+    }
+
+    #[cfg(feature = "use_serde")]
+    #[test]
+    fn test_serde_skips_pending_buffer() {
+        let mut digest = TDigest::default();
+        digest.extend_values([1.0, 2.0, 3.0]);
+        let unflushed = serde_json::to_string(&digest).unwrap();
+        assert!(!unflushed.contains("buffer"));
+
+        digest.flush();
+        let serialized = serde_json::to_string(&digest).unwrap();
+        let deserialized: TDigest = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(digest, deserialized);
     }
 }

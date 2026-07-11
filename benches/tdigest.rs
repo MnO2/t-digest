@@ -56,6 +56,16 @@ fn incremental_ingest(c: &mut Criterion) {
             digest
         })
     });
+    group.bench_function("buffered_push", |b| {
+        b.iter(|| {
+            let mut digest = TDigest::new_with_size(MAX_SIZE);
+            for value in &input {
+                digest.push(black_box(*value));
+            }
+            digest.flush();
+            digest
+        })
+    });
     group.finish();
 }
 

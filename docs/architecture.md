@@ -135,9 +135,9 @@ Given a quantile `q` in [0.0, 1.0], estimate the corresponding value:
                                     interpolated value
 ```
 
-## Immutable API design
+## Ingestion APIs
 
-All data-ingestion methods (`merge_sorted`, `merge_unsorted`) consume `&self` and return a new `TDigest` rather than mutating in place. This makes the API naturally thread-safe for read-heavy workloads and simplifies reasoning about state. If you need to accumulate incrementally, simply reassign:
+The original batch methods (`merge_sorted`, `merge_unsorted`) consume `&self` and return a new `TDigest`. This makes the API naturally thread-safe for read-heavy workloads and simplifies reasoning about state:
 
 ```rust
 let mut t = TDigest::new_with_size(100);
@@ -145,6 +145,14 @@ for batch in batches {
     t = t.merge_sorted(batch);
 }
 ```
+
+For one-at-a-time ingestion, `push` and `extend_values` retain values in a
+buffer sized at five times the compression factor. Summary statistics update
+immediately; when the buffer fills, it is sorted and compressed with the existing
+centroids. Call `flush` before `estimate_quantile`, `estimate_rank`,
+`trimmed_mean`, `centroids`, immutable merges, or serialization. Those operations
+use a debug assertion to catch an unflushed buffer without adding interior
+mutability or weakening `Sync`.
 
 ## Measured accuracy
 

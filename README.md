@@ -86,6 +86,20 @@ let unsorted = vec![5.0, 3.0, 1.0, 4.0, 2.0];
 let t = t.merge_unsorted(unsorted);
 ```
 
+For streaming ingestion, use the buffered mutable API and flush before a
+centroid-based query:
+
+```rust
+use tdigest::TDigest;
+
+let mut t = TDigest::new_with_size(100);
+for value in [5.0, 3.0, 1.0, 4.0, 2.0] {
+    t.push(value);
+}
+t.flush();
+assert_eq!(t.estimate_quantile(0.5), Some(3.0));
+```
+
 ### Querying
 
 ```rust
