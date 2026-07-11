@@ -39,10 +39,17 @@ carefully:
    — note `slice::is_sorted` is stabilized after MSRV 1.62, so write the windows
    check manually or via a small helper.
 
+**Execution result:** the ordering assertion passed the unit tests, proptests,
+and accuracy harness, but removing the sort did not produce a reproducible
+benchmark improvement. The sort was retained per this plan's no-churn rule.
+
 ### 4. Drop `shrink_to_fit` on the compressed vec (src/lib.rs:311, 385)
 
 It can force a realloc+copy on every merge to save at most a few hundred bytes.
 Remove both calls; verify no test asserts on capacity (none do today).
+
+**Execution result:** restoring `shrink_to_fit` was neutral at smaller sizes and
+about 2% slower on the 1M sorted-ingest case, so the removal was retained.
 
 ### 5. Reserve exact capacity in `merge_sorted`
 

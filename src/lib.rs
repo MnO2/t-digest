@@ -39,7 +39,7 @@ use std::mem;
 use serde::{Deserialize, Serialize};
 
 /// Centroid implementation to the cluster mentioned in the paper.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "use_serde", derive(Serialize, Deserialize))]
 #[non_exhaustive]
 pub struct Centroid {
@@ -333,7 +333,7 @@ impl TDigest {
             "input values must be finite"
         );
         let mut sorted_values = unsorted_values;
-        sorted_values.sort_by(f64::total_cmp);
+        sorted_values.sort_unstable_by(f64::total_cmp);
         self.merge_sorted(sorted_values)
     }
 
@@ -393,7 +393,7 @@ impl TDigest {
         let mut curr: Centroid = if let Some(c) = iter_centroids.peek() {
             let curr = **iter_sorted_values.peek().unwrap();
             if c.mean() < curr {
-                iter_centroids.next().unwrap().clone()
+                *iter_centroids.next().unwrap()
             } else {
                 Centroid::new(*iter_sorted_values.next().unwrap(), 1.0)
             }
@@ -406,7 +406,7 @@ impl TDigest {
         while iter_centroids.peek().is_some() || iter_sorted_values.peek().is_some() {
             let next: Centroid = if let Some(c) = iter_centroids.peek() {
                 if iter_sorted_values.peek().is_none() || c.mean() < **iter_sorted_values.peek().unwrap() {
-                    iter_centroids.next().unwrap().clone()
+                    *iter_centroids.next().unwrap()
                 } else {
                     Centroid::new(*iter_sorted_values.next().unwrap(), 1.0)
                 }
@@ -419,7 +419,7 @@ impl TDigest {
             if weight_so_far <= q_limit_times_count {
                 curr.merge(next.mean(), next.weight());
             } else {
-                compressed.push(curr.clone());
+                compressed.push(curr);
                 q_limit_times_count = Self::k_to_q(k_limit, self.max_size as f64) * result.count;
                 k_limit += 1.0;
                 curr = next;
@@ -427,7 +427,6 @@ impl TDigest {
         }
 
         compressed.push(curr);
-        compressed.shrink_to_fit();
         compressed.sort();
 
         result.centroids = compressed;
@@ -480,7 +479,8 @@ impl TDigest {
         centroids.sort();
 
         let mut result = TDigest::new_with_size(max_size);
-        let mut compressed: Vec<Centroid> = Vec::with_capacity(max_size);
+        let compressed_capacity = max_size.saturating_add(1);
+        let mut compressed: Vec<Centroid> = Vec::with_capacity(compressed_capacity);
 
         let mut k_limit: f64 = 1.0;
         let mut q_limit_times_count: f64 = Self::k_to_q(k_limit, max_size as f64) * count;
@@ -495,15 +495,15 @@ impl TDigest {
             if weight_so_far <= q_limit_times_count {
                 curr.merge(centroid.mean(), centroid.weight());
             } else {
-                compressed.push(curr.clone());
+                compressed.push(*curr);
                 q_limit_times_count = Self::k_to_q(k_limit, max_size as f64) * count;
                 k_limit += 1.0;
                 curr = centroid;
             }
         }
 
-        compressed.push(curr.clone());
-        compressed.shrink_to_fit();
+        compressed.push(*curr);
+        debug_assert!(compressed.len() <= compressed_capacity);
         compressed.sort();
 
         result.count = count;
@@ -522,6 +522,7 @@ impl TDigest {
             self.buffer.is_empty(),
             "flush buffered values before estimating quantiles"
         );
+        debug_assert!(!q.is_nan(), "quantile must not be NaN");
         if self.centroids.is_empty() {
             return None;
         }
@@ -565,6 +566,62 @@ impl TDigest {
             }
         }
 
+        Some(self.interpolate_quantile(pos, rank, t))
+    }
+
+    /// Estimate several quantiles with one cumulative-weight pass.
+    ///
+    /// Quantiles do not need to be sorted. Each result has the same semantics as
+    /// [`TDigest::estimate_quantile`].
+    ///
+    /// ```
+    /// use tdigest::TDigest;
+    ///
+    /// let digest = TDigest::default().merge_sorted(vec![1.0, 2.0, 3.0]);
+    /// assert_eq!(digest.quantiles(&[0.0, 0.5, 1.0]), vec![Some(1.0), Some(2.0), Some(3.0)]);
+    /// ```
+    #[must_use]
+    pub fn quantiles(&self, qs: &[f64]) -> Vec<Option<f64>> {
+        debug_assert!(
+            self.buffer.is_empty(),
+            "flush buffered values before estimating quantiles"
+        );
+        debug_assert!(qs.iter().all(|q| !q.is_nan()), "quantiles must not contain NaN");
+        if self.centroids.is_empty() {
+            return vec![None; qs.len()];
+        }
+
+        let mut total = 0.0;
+        let cumulative_weights: Vec<f64> = self
+            .centroids
+            .iter()
+            .map(|centroid| {
+                total += centroid.weight();
+                total
+            })
+            .collect();
+
+        qs.iter()
+            .map(|q| {
+                if *q <= 0.0 {
+                    return self.min;
+                }
+                if *q >= 1.0 {
+                    return self.max;
+                }
+
+                let rank = *q * self.count;
+                let pos = cumulative_weights
+                    .partition_point(|cumulative_weight| *cumulative_weight <= rank)
+                    .min(self.centroids.len() - 1);
+                let weight_before = if pos == 0 { 0.0 } else { cumulative_weights[pos - 1] };
+                Some(self.interpolate_quantile(pos, rank, weight_before))
+            })
+            .collect()
+    }
+
+    #[inline]
+    fn interpolate_quantile(&self, pos: usize, rank: f64, weight_before: f64) -> f64 {
         let mut delta = 0.0;
         let mut min = self.min.unwrap();
         let mut max = self.max.unwrap();
@@ -583,13 +640,13 @@ impl TDigest {
             }
         }
 
-        let value = self.centroids[pos].mean() + ((rank - t) / self.centroids[pos].weight() - 0.5) * delta;
+        let value = self.centroids[pos].mean() + ((rank - weight_before) / self.centroids[pos].weight() - 0.5) * delta;
         let finite_value = if value.is_finite() {
             value
         } else {
             self.centroids[pos].mean()
         };
-        Some(finite_value.clamp(min, max))
+        finite_value.clamp(min, max)
     }
 
     /// Estimate the rank (CDF) of `value`: the fraction of inserted values less
@@ -924,6 +981,17 @@ mod tests {
                 estimates[i]
             );
         }
+    }
+
+    #[test]
+    fn test_bulk_quantiles_match_individual_queries() {
+        let digest = TDigest::new_with_size(100).merge_sorted((1..=100_000).map(f64::from).collect());
+        let qs = [1.0, 0.001, 0.5, 0.999, 0.0];
+        let expected: Vec<Option<f64>> = qs.iter().map(|q| digest.estimate_quantile(*q)).collect();
+        assert_eq!(digest.quantiles(&qs), expected);
+
+        let empty = TDigest::default();
+        assert_eq!(empty.quantiles(&qs), vec![None; qs.len()]);
     }
 
     #[test]

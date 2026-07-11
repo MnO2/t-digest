@@ -139,6 +139,10 @@ Given a quantile `q` in [0.0, 1.0], estimate the corresponding value:
                                     interpolated value
 ```
 
+For several quantiles, `quantiles` builds cumulative centroid weights once and
+uses binary search for each requested rank. Inputs need not be sorted, and each
+result matches an individual `estimate_quantile` call.
+
 ## Ingestion APIs
 
 The original batch methods (`merge_sorted`, `merge_unsorted`) consume `&self` and return a new `TDigest`. This makes the API naturally thread-safe for read-heavy workloads and simplifies reasoning about state:

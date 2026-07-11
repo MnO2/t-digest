@@ -98,6 +98,9 @@ fn estimate_quantile(c: &mut Criterion) {
                 .collect::<Vec<_>>()
         })
     });
+    group.bench_function("bulk_100_queries", |b| {
+        b.iter(|| digest.quantiles(black_box(&quantiles)))
+    });
     group.finish();
 }
 
