@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [1.0.0] - 2026-07-12
 
 ### Added
 
@@ -27,8 +27,6 @@ All notable changes to this project will be documented in this file.
 ### Deprecated
 
 - `use_serde` remains as a compatibility alias; new users should enable `serde`.
-
-## [1.0.0] - 2026-04-04
 
 ### Breaking Changes
 
