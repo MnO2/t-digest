@@ -37,8 +37,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Vendor dependencies
+        run: |
+          mkdir -p .cargo
+          cargo generate-lockfile
+          cargo vendor --locked vendor > .cargo/config.toml
       - uses: dtolnay/rust-toolchain@1.62.0
-      - run: cargo check --all-features
+      - run: cargo check --locked --offline --all-features
 
   codecov:
     name: Code Coverage
