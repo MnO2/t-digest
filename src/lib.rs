@@ -51,7 +51,7 @@ use serde::{Deserialize, Serialize};
 
 /// Centroid implementation to the cluster mentioned in the paper.
 #[derive(Debug, Clone, Copy)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize))]
 #[non_exhaustive]
 pub struct Centroid {
     mean: f64,
@@ -175,10 +175,13 @@ impl Default for Centroid {
 /// from serde output, so serializing an unflushed digest produces an incomplete
 /// digest.
 ///
+/// With the `serde` feature, deserialization validates centroid ordering,
+/// positive weights, extrema, and count consistency before constructing a digest.
+///
 /// Queries that need data return `None` when the digest is empty. Summary
 /// accessors such as [`TDigest::count`] and [`TDigest::sum`] return zero.
 #[derive(Debug, PartialEq, Clone)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", derive(Serialize))]
 #[non_exhaustive]
 pub struct TDigest {
     centroids: Vec<Centroid>,
@@ -191,12 +194,124 @@ pub struct TDigest {
     buffer: Vec<f64>,
 }
 
+#[cfg(feature = "serde")]
+impl<'de> Deserialize<'de> for Centroid {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(rename = "Centroid")]
+        struct Fields {
+            mean: f64,
+            weight: f64,
+        }
+
+        let fields = Fields::deserialize(deserializer)?;
+        if !fields.mean.is_finite() || !fields.weight.is_finite() || fields.weight < 0.0 {
+            return Err(serde::de::Error::custom(
+                "centroid mean and weight must be finite, and weight must be nonnegative",
+            ));
+        }
+        Ok(Centroid {
+            mean: fields.mean,
+            weight: fields.weight,
+        })
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> Deserialize<'de> for TDigest {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(rename = "TDigest")]
+        struct Fields {
+            centroids: Vec<Centroid>,
+            max_size: usize,
+            sum: f64,
+            count: f64,
+            max: Option<f64>,
+            min: Option<f64>,
+        }
+
+        let fields = Fields::deserialize(deserializer)?;
+        if fields.max_size == 0 {
+            return Err(serde::de::Error::custom("max_size must be greater than zero"));
+        }
+        if !fields.count.is_finite() || fields.count < 0.0 {
+            return Err(serde::de::Error::custom("count must be finite and nonnegative"));
+        }
+
+        if fields.centroids.is_empty() {
+            if fields.count != 0.0 || fields.sum != 0.0 || fields.min.is_some() || fields.max.is_some() {
+                return Err(serde::de::Error::custom(
+                    "empty digest must have zero count and sum and no extrema",
+                ));
+            }
+        } else {
+            let (min, max) = match (fields.min, fields.max) {
+                (Some(min), Some(max)) if min.is_finite() && max.is_finite() && min <= max => (min, max),
+                _ => {
+                    return Err(serde::de::Error::custom(
+                        "non-empty digest must have finite ordered extrema",
+                    ))
+                }
+            };
+            if fields.count == 0.0 {
+                return Err(serde::de::Error::custom("non-empty digest must have positive count"));
+            }
+            if fields
+                .centroids
+                .iter()
+                .any(|centroid| centroid.weight <= 0.0 || centroid.mean < min || centroid.mean > max)
+            {
+                return Err(serde::de::Error::custom(
+                    "digest centroids must have positive weights and means within the extrema",
+                ));
+            }
+            if fields
+                .centroids
+                .windows(2)
+                .any(|pair| pair[0].mean.total_cmp(&pair[1].mean) == Ordering::Greater)
+            {
+                return Err(serde::de::Error::custom("digest centroids must be sorted by mean"));
+            }
+            let weight_sum: f64 = fields.centroids.iter().map(|centroid| centroid.weight).sum();
+            // Count and centroid weights can be accumulated in different orders.
+            // A relative tolerance admits floating-point roundoff for fractional
+            // weights while rejecting meaningful discrepancies at any scale.
+            if !weight_sum.is_finite() || !(1.0 - 1e-9..=1.0 + 1e-9).contains(&(weight_sum / fields.count)) {
+                return Err(serde::de::Error::custom("count must match the total centroid weight"));
+            }
+        }
+
+        // A valid finite input stream can overflow its sum, so non-finite sums
+        // are deliberately accepted for non-empty digests.
+        Ok(TDigest {
+            centroids: fields.centroids,
+            max_size: fields.max_size,
+            sum: fields.sum,
+            count: fields.count,
+            max: fields.max,
+            min: fields.min,
+            buffer: Vec::new(),
+        })
+    }
+}
+
 const BUFFER_FACTOR: usize = 5;
 
 impl TDigest {
     /// Create an empty digest with the requested compression size.
     ///
     /// Larger sizes retain more centroids and generally improve accuracy.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `max_size` is zero.
     ///
     /// ```
     /// use tdigest::TDigest;
@@ -206,6 +321,7 @@ impl TDigest {
     /// ```
     #[must_use]
     pub fn new_with_size(max_size: usize) -> Self {
+        assert!(max_size > 0, "max_size must be greater than zero");
         TDigest {
             centroids: Vec::new(),
             max_size,
@@ -219,16 +335,23 @@ impl TDigest {
 
     /// Construct a digest from existing centroids and summary statistics.
     ///
-    /// If there are more centroids than `max_size`, they are recompressed.
+    /// Centroids are sorted by mean. If there are more centroids than
+    /// `max_size`, they are recompressed using the requested size.
+    /// The supplied statistics must describe the same samples as the centroids.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `max_size` is zero. Debug builds also check the extrema.
     #[must_use]
     pub fn new(
-        centroids: Vec<Centroid>,
+        mut centroids: Vec<Centroid>,
         sum: f64,
         count: f64,
         max: Option<f64>,
         min: Option<f64>,
         max_size: usize,
     ) -> Self {
+        assert!(max_size > 0, "max_size must be greater than zero");
         debug_assert!(
             centroids.is_empty() || (min.is_some() && max.is_some()),
             "non-empty digest must have min and max"
@@ -236,24 +359,20 @@ impl TDigest {
         debug_assert!(min.map_or(true, f64::is_finite), "min must be finite");
         debug_assert!(max.map_or(true, f64::is_finite), "max must be finite");
 
-        if centroids.len() <= max_size {
-            TDigest {
-                centroids,
-                max_size,
-                sum,
-                count,
-                max,
-                min,
-                buffer: Vec::with_capacity(BUFFER_FACTOR * max_size),
-            }
+        centroids.sort();
+        let digest = TDigest {
+            centroids,
+            max_size,
+            sum,
+            count,
+            max,
+            min,
+            buffer: Vec::new(),
+        };
+        if digest.centroids.len() > max_size {
+            Self::merge_digests(vec![digest])
         } else {
-            let sz = centroids.len();
-            let digests: Vec<TDigest> = vec![
-                TDigest::new_with_size(max_size),
-                TDigest::new(centroids, sum, count, max, min, sz),
-            ];
-
-            Self::merge_digests(digests)
+            digest
         }
     }
 
@@ -378,6 +497,16 @@ impl TDigest {
             1.0 - 2.0 * base * base
         } else {
             2.0 * k_div_d * k_div_d
+        }
+    }
+
+    fn weight_limit(k: f64, max_size: usize, count: f64) -> f64 {
+        if k >= max_size as f64 {
+            // The final bucket must absorb the remaining weight even when
+            // count and accumulated centroid weights differ by roundoff.
+            f64::INFINITY
+        } else {
+            Self::k_to_q(k, max_size as f64) * count
         }
     }
 
@@ -506,7 +635,7 @@ impl TDigest {
         let mut compressed: Vec<Centroid> = Vec::with_capacity(self.max_size);
 
         let mut k_limit: f64 = 1.0;
-        let mut q_limit_times_count: f64 = Self::k_to_q(k_limit, self.max_size as f64) * result.count;
+        let mut q_limit_times_count: f64 = Self::weight_limit(k_limit, self.max_size, result.count);
         k_limit += 1.0;
 
         let mut iter_centroids = self.centroids.iter().peekable();
@@ -542,7 +671,7 @@ impl TDigest {
                 curr.merge(next.mean(), next.weight());
             } else {
                 compressed.push(curr);
-                q_limit_times_count = Self::k_to_q(k_limit, self.max_size as f64) * result.count;
+                q_limit_times_count = Self::weight_limit(k_limit, self.max_size, result.count);
                 k_limit += 1.0;
                 curr = next;
             }
@@ -614,7 +743,7 @@ impl TDigest {
         let mut compressed: Vec<Centroid> = Vec::with_capacity(compressed_capacity);
 
         let mut k_limit: f64 = 1.0;
-        let mut q_limit_times_count: f64 = Self::k_to_q(k_limit, max_size as f64) * count;
+        let mut q_limit_times_count: f64 = Self::weight_limit(k_limit, max_size, count);
         k_limit += 1.0;
 
         let mut iter_centroids = centroids.iter_mut();
@@ -627,7 +756,7 @@ impl TDigest {
                 curr.merge(centroid.mean(), centroid.weight());
             } else {
                 compressed.push(*curr);
-                q_limit_times_count = Self::k_to_q(k_limit, max_size as f64) * count;
+                q_limit_times_count = Self::weight_limit(k_limit, max_size, count);
                 k_limit += 1.0;
                 curr = centroid;
             }
