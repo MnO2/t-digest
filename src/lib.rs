@@ -1277,6 +1277,7 @@ mod tests {
         assert_eq!(empty.quantiles(&qs), vec![None; qs.len()]);
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     #[should_panic(expected = "non-empty digest must have min and max")]
     fn test_new_panics_on_missing_min_max() {
@@ -1291,12 +1292,14 @@ mod tests {
         assert_eq!(result.max_size(), 200);
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     #[should_panic(expected = "input values must be finite")]
     fn test_merge_unsorted_rejects_nan_in_debug_builds() {
         let _ = TDigest::default().merge_unsorted(vec![1.0, f64::NAN]);
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     #[should_panic(expected = "input values must be finite")]
     fn test_merge_sorted_rejects_infinity_in_debug_builds() {

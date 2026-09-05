@@ -25,6 +25,9 @@ jobs:
         run: cargo build
       - name: Test
         run: cargo test --all-features
+      - name: Test optimized builds
+        if: runner.os == 'Linux'
+        run: cargo test --release --all-features
       - name: Test feature compatibility
         if: runner.os == 'Linux'
         run: |
@@ -45,6 +48,8 @@ jobs:
           cargo vendor --locked vendor > .cargo/config.toml
       - uses: dtolnay/rust-toolchain@1.62.0
       - run: cargo check --locked --offline --all-features
+      - run: cargo check --locked --offline --no-default-features
+      - run: cargo check --locked --offline --no-default-features --features serde
 
   codecov:
     name: Code Coverage
@@ -75,6 +80,7 @@ jobs:
         with:
           components: rustfmt
       - run: cargo fmt --all -- --check
+      - run: cargo fmt --manifest-path fuzz/Cargo.toml -- --check
 
   clippy:
     name: Clippy
