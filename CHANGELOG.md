@@ -2,6 +2,32 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+
+- Preserve the requested compression size and sort centroids in `TDigest::new`; reject zero compression sizes.
+- Keep compression within `max_size` even when fractional centroid weights and the stored count differ by roundoff.
+- Make quantile interpolation monotonic across uneven centroid gaps, with finite results for extreme values and subnormal weights.
+- Interpolate ranks for single-centroid digests that represent varying values and avoid overflow across extreme endpoints.
+- Keep centroid means and trimmed means finite when weighted sums overflow; compute `mean()` from retained data if its sum overflows.
+- Preserve centroids when adding zero sum and zero weight, including empty accumulators.
+- Make centroid equality consistent with its total ordering, including weights and signed zeros.
+- Reject invalid serde states before they can cause query or merge panics, preserving the existing field layout for valid digests.
+- Restrict debug-assertion tests to debug builds so the release test suite can run.
+
+### Performance
+
+- Allocate the ingestion buffer on first use and reuse it across flushes.
+- Bound compression-vector reservations by the available input size.
+- Avoid building cumulative weights for empty or single-element bulk quantile queries.
+
+### Documentation and validation
+
+- Clarify memory usage, flush requirements, serialization limits, query semantics, and distribution-dependent accuracy.
+- Add constructor, numeric, and serde regression tests; extend fuzzing to buffered ingestion and interior quantiles.
+- Cover optimized tests and Rust 1.62 `no_std` configurations in CI.
+
 ## [1.0.0] - 2026-07-12
 
 ### Added
