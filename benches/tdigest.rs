@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{black_box, criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion, Throughput};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use tdigest::TDigest;
@@ -69,6 +69,41 @@ fn incremental_ingest(c: &mut Criterion) {
     group.finish();
 }
 
+fn small_batch_ingest(c: &mut Criterion) {
+    let mut group = c.benchmark_group("small_batch_ingest");
+    group.sample_size(30).measurement_time(Duration::from_secs(2));
+    for size in [1, 10, 100] {
+        let input = sorted_values(size, 50_000 + size as u64);
+        group.throughput(Throughput::Elements(size as u64));
+        group.bench_with_input(BenchmarkId::from_parameter(size), &input, |b, input| {
+            b.iter(|| TDigest::new_with_size(MAX_SIZE).merge_sorted(black_box(input.clone())))
+        });
+    }
+    group.finish();
+}
+
+fn buffered_flush(c: &mut Criterion) {
+    let seed = TDigest::new_with_size(MAX_SIZE).merge_unsorted(values(10_000, 60_000));
+    let mut group = c.benchmark_group("buffered_flush");
+    group.sample_size(30).measurement_time(Duration::from_secs(2));
+    for size in [1, 100, 499] {
+        let mut pending = seed.clone();
+        pending.extend_values(values(size, 60_000 + size as u64));
+        group.throughput(Throughput::Elements(size as u64));
+        group.bench_with_input(BenchmarkId::from_parameter(size), &pending, |b, pending| {
+            b.iter_batched(
+                || pending.clone(),
+                |mut digest| {
+                    digest.flush();
+                    digest
+                },
+                BatchSize::SmallInput,
+            )
+        });
+    }
+    group.finish();
+}
+
 fn merge_digests(c: &mut Criterion) {
     let mut group = c.benchmark_group("merge_digests");
     group.sample_size(10).measurement_time(Duration::from_secs(2));
@@ -101,6 +136,9 @@ fn estimate_quantile(c: &mut Criterion) {
     group.bench_function("bulk_100_queries", |b| {
         b.iter(|| digest.quantiles(black_box(&quantiles)))
     });
+    group.bench_function("bulk_empty", |b| b.iter(|| digest.quantiles(black_box(&[]))));
+    group.bench_function("bulk_p50", |b| b.iter(|| digest.quantiles(black_box(&[0.5]))));
+    group.bench_function("bulk_p99", |b| b.iter(|| digest.quantiles(black_box(&[0.99]))));
     group.finish();
 }
 
@@ -121,6 +159,8 @@ criterion_group!(
     benches,
     batch_ingest,
     incremental_ingest,
+    small_batch_ingest,
+    buffered_flush,
     merge_digests,
     estimate_quantile,
     max_size_sensitivity

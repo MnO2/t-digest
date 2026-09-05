@@ -329,7 +329,7 @@ impl TDigest {
             count: 0.0,
             max: None,
             min: None,
-            buffer: Vec::with_capacity(BUFFER_FACTOR * max_size),
+            buffer: Vec::new(),
         }
     }
 
@@ -462,15 +462,7 @@ impl TDigest {
 
 impl Default for TDigest {
     fn default() -> Self {
-        TDigest {
-            centroids: Vec::new(),
-            max_size: 100,
-            sum: 0.0,
-            count: 0.0,
-            max: None,
-            min: None,
-            buffer: Vec::with_capacity(BUFFER_FACTOR * 100),
-        }
+        Self::new_with_size(100)
     }
 }
 
@@ -530,6 +522,9 @@ impl TDigest {
         self.sum += value;
         self.min = Some(self.min.map_or(value, |current| current.min(value)));
         self.max = Some(self.max.map_or(value, |current| current.max(value)));
+        if self.buffer.capacity() == 0 {
+            self.buffer.reserve(BUFFER_FACTOR.saturating_mul(self.max_size));
+        }
         self.buffer.push(value);
 
         if self.buffer.len() >= BUFFER_FACTOR.saturating_mul(self.max_size).max(1) {
@@ -632,7 +627,10 @@ impl TDigest {
         result.min = min;
         result.max = max;
 
-        let mut compressed: Vec<Centroid> = Vec::with_capacity(self.max_size);
+        let capacity = self
+            .max_size
+            .min(self.centroids.len().saturating_add(sorted_values.len()));
+        let mut compressed: Vec<Centroid> = Vec::with_capacity(capacity);
 
         let mut k_limit: f64 = 1.0;
         let mut q_limit_times_count: f64 = Self::weight_limit(k_limit, self.max_size, result.count);
@@ -739,7 +737,7 @@ impl TDigest {
         centroids.sort();
 
         let mut result = TDigest::new_with_size(max_size);
-        let compressed_capacity = max_size.saturating_add(1);
+        let compressed_capacity = max_size.min(n_centroids);
         let mut compressed: Vec<Centroid> = Vec::with_capacity(compressed_capacity);
 
         let mut k_limit: f64 = 1.0;
@@ -857,6 +855,9 @@ impl TDigest {
         debug_assert!(qs.iter().all(|q| !q.is_nan()), "quantiles must not contain NaN");
         if self.centroids.is_empty() {
             return vec![None; qs.len()];
+        }
+        if qs.len() <= 1 {
+            return qs.iter().map(|q| self.estimate_quantile(*q)).collect();
         }
 
         let mut total = 0.0;
