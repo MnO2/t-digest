@@ -60,7 +60,7 @@ pub struct Centroid {
 
 impl PartialEq for Centroid {
     fn eq(&self, other: &Self) -> bool {
-        self.mean == other.mean && self.weight == other.weight
+        self.cmp(other) == Ordering::Equal
     }
 }
 
@@ -72,7 +72,9 @@ impl PartialOrd for Centroid {
 
 impl Ord for Centroid {
     fn cmp(&self, other: &Centroid) -> Ordering {
-        self.mean.total_cmp(&other.mean)
+        self.mean
+            .total_cmp(&other.mean)
+            .then_with(|| self.weight.total_cmp(&other.weight))
     }
 }
 
@@ -101,9 +103,19 @@ impl Centroid {
     }
 
     /// Add a weighted `sum` and `weight`, returning the combined sum.
+    ///
+    /// Adding zero sum and zero weight leaves the centroid unchanged. The
+    /// returned sum can overflow even when the updated mean remains finite.
     pub fn add(&mut self, sum: f64, weight: f64) -> f64 {
+        if sum == 0.0 && weight == 0.0 {
+            return self.weight * self.mean;
+        }
         let new_sum: f64 = sum + self.weight * self.mean;
         let new_weight: f64 = self.weight + weight;
+        if weight > 0.0 && (sum / weight).is_finite() {
+            self.merge(sum / weight, weight);
+            return new_sum;
+        }
         self.weight = new_weight;
         self.mean = new_sum / new_weight;
         new_sum
@@ -115,10 +127,38 @@ impl Centroid {
             self.weight = new_weight;
             return;
         }
-        let current_fraction = self.weight / new_weight;
         let added_fraction = weight / new_weight;
-        self.mean = self.mean * current_fraction + mean * added_fraction;
+        let combined = self.mean * (1.0 - added_fraction) + mean * added_fraction;
+        self.mean = if !combined.is_finite()
+            || (combined < self.mean && combined < mean)
+            || (combined > self.mean && combined > mean)
+        {
+            interpolate(self.mean, mean, added_fraction)
+        } else {
+            combined
+        };
         self.weight = new_weight;
+    }
+}
+
+// Interpolate finite endpoints without overflowing their difference or losing
+// the convex bound to rounding when both endpoints are close to f64::MAX.
+fn interpolate(left: f64, right: f64, fraction: f64) -> f64 {
+    if left == right {
+        left
+    } else if left.is_sign_negative() == right.is_sign_negative() {
+        left + (right - left) * fraction
+    } else {
+        left * (1.0 - fraction) + right * fraction
+    }
+}
+
+fn fraction_between(value: f64, left: f64, right: f64) -> f64 {
+    let width = right - left;
+    if width.is_finite() {
+        (value - left) / width
+    } else {
+        (value / 2.0 - left / 2.0) / (right / 2.0 - left / 2.0)
     }
 }
 
@@ -220,9 +260,24 @@ impl TDigest {
     #[inline]
     #[must_use]
     /// Return the arithmetic mean, or `None` when the digest is empty.
+    ///
+    /// If the stored sum overflows, this uses a weighted mean of the centroids
+    /// and buffered values. That fallback is approximate and takes linear time
+    /// in the number of retained centroids and pending values.
     pub fn mean(&self) -> Option<f64> {
         if self.count > 0.0 {
-            Some(self.sum / self.count)
+            if self.sum.is_finite() {
+                Some(self.sum / self.count)
+            } else {
+                let mut average = Centroid { mean: 0.0, weight: 0.0 };
+                for centroid in &self.centroids {
+                    average.merge(centroid.mean(), centroid.weight());
+                }
+                for value in &self.buffer {
+                    average.merge(*value, 1.0);
+                }
+                Some(average.mean())
+            }
         } else {
             None
         }
@@ -230,6 +285,9 @@ impl TDigest {
 
     #[inline]
     /// Return the sum of all inserted values.
+    ///
+    /// This ordinary `f64` accumulator may overflow to infinity or NaN even
+    /// when every inserted value is finite.
     #[must_use]
     pub fn sum(&self) -> f64 {
         self.sum
@@ -703,37 +761,42 @@ impl TDigest {
 
     #[inline]
     fn interpolate_quantile(&self, pos: usize, rank: f64, weight_before: f64) -> f64 {
-        let mut delta = 0.0;
-        let mut min = self.min.unwrap();
-        let mut max = self.max.unwrap();
-
-        if self.centroids.len() > 1 {
+        let centroid = &self.centroids[pos];
+        let offset = (rank - weight_before) / centroid.weight() - 0.5;
+        // Interpolate between centroid centers in rank space. Using a local
+        // slope across both neighbors can jump backwards at bucket boundaries.
+        let (neighbor, weight_fraction) = if offset < 0.0 {
             if pos == 0 {
-                delta = self.centroids[pos + 1].mean() - self.centroids[pos].mean();
-                max = self.centroids[pos + 1].mean();
-            } else if pos == (self.centroids.len() - 1) {
-                delta = self.centroids[pos].mean() - self.centroids[pos - 1].mean();
-                min = self.centroids[pos - 1].mean();
+                (self.min.unwrap(), 1.0)
             } else {
-                delta = (self.centroids[pos + 1].mean() - self.centroids[pos - 1].mean()) / 2.0;
-                min = self.centroids[pos - 1].mean();
-                max = self.centroids[pos + 1].mean();
+                let previous = &self.centroids[pos - 1];
+                (
+                    previous.mean(),
+                    centroid.weight() / (previous.weight() + centroid.weight()),
+                )
             }
-        }
-
-        let value = self.centroids[pos].mean() + ((rank - weight_before) / self.centroids[pos].weight() - 0.5) * delta;
-        let finite_value = if value.is_finite() {
-            value
+        } else if pos + 1 == self.centroids.len() {
+            (self.max.unwrap(), 1.0)
         } else {
-            self.centroids[pos].mean()
+            let next = &self.centroids[pos + 1];
+            (next.mean(), centroid.weight() / (centroid.weight() + next.weight()))
         };
-        finite_value.clamp(min, max)
+        // Normalize before halving so positive subnormal weights remain usable.
+        let offset_magnitude = if offset < 0.0 { -offset } else { offset };
+        interpolate(
+            centroid.mean(),
+            neighbor,
+            (offset_magnitude * 2.0 * weight_fraction).clamp(0.0, 1.0),
+        )
+        .clamp(self.min.unwrap(), self.max.unwrap())
     }
 
-    /// Estimate the rank (CDF) of `value`: the fraction of inserted values less
-    /// than or equal to it.
+    /// Estimate the rank (CDF) of `value` by interpolating centroid midpoints.
     ///
-    /// Returns `None` if the digest is empty.
+    /// Returns `None` if the digest is empty. Values at or below the minimum
+    /// return zero; values at or above the maximum return one. For a constant
+    /// digest, the rank is one at the constant value. This is a smooth estimate,
+    /// rather than an exact count of samples at repeated values.
     ///
     /// ```
     /// use tdigest::TDigest;
@@ -752,7 +815,7 @@ impl TDigest {
 
         let min = self.min.unwrap();
         let max = self.max.unwrap();
-        if self.centroids.len() == 1 || min == max {
+        if min == max {
             return Some(if value >= max { 1.0 } else { 0.0 });
         }
         if value <= min {
@@ -766,7 +829,7 @@ impl TDigest {
         if value < first.mean() {
             let width = first.mean() - min;
             let rank = if width > 0.0 {
-                (value - min) / width * first.weight() / 2.0
+                fraction_between(value, min, first.mean()) * first.weight() / 2.0
             } else {
                 0.0
             };
@@ -782,7 +845,7 @@ impl TDigest {
             if value <= right.mean() {
                 let width = right.mean() - left.mean();
                 let rank = if width > 0.0 {
-                    left_rank + (value - left.mean()) / width * (right_rank - left_rank)
+                    left_rank + fraction_between(value, left.mean(), right.mean()) * (right_rank - left_rank)
                 } else {
                     right_rank
                 };
@@ -795,7 +858,7 @@ impl TDigest {
         let last_rank = self.count - last.weight() / 2.0;
         let width = max - last.mean();
         let rank = if width > 0.0 {
-            last_rank + (value - last.mean()) / width * (self.count - last_rank)
+            last_rank + fraction_between(value, last.mean(), max) * (self.count - last_rank)
         } else {
             self.count
         };
@@ -830,15 +893,13 @@ impl TDigest {
         }
 
         let mut cumulative = 0.0;
-        let mut included_weight = 0.0;
-        let mut included_sum = 0.0;
+        let mut average = Centroid { mean: 0.0, weight: 0.0 };
         for centroid in &self.centroids {
             let start = cumulative;
             let end = start + centroid.weight();
             let overlap = end.min(upper) - start.max(lower);
             if overlap > 0.0 {
-                included_weight += overlap;
-                included_sum += centroid.mean() * overlap;
+                average.merge(centroid.mean(), overlap);
             }
             cumulative = end;
             if cumulative >= upper {
@@ -846,8 +907,8 @@ impl TDigest {
             }
         }
 
-        if included_weight > 0.0 {
-            Some(included_sum / included_weight)
+        if average.weight() > 0.0 {
+            Some(average.mean())
         } else {
             None
         }

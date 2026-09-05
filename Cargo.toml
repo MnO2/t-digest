@@ -23,7 +23,8 @@ criterion = { version = "=0.4.0", default-features = false, features = ["cargo_b
 proptest = { version = "=1.0.0", default-features = false, features = ["std"] }
 rand = "=0.8.5"
 rand_distr = "=0.4.3"
-serde_json = "1.0"
+# Exact round-trip tests require correctly rounded JSON float parsing.
+serde_json = { version = "1.0", features = ["float_roundtrip"] }
 
 [features]
 default = ["std"]
