@@ -212,6 +212,12 @@ assertions to catch an unflushed buffer. Serialization does not check it, and
 omits pending values while retaining their summary statistics. Violating the
 flush contract can therefore produce incomplete or inconsistent data.
 
+`absorb` is the mutable counterpart of `merge_digests` for two digests. If the
+absorbed digest has never flushed, its buffered values are pushed into the
+receiver, which is exactly equivalent to pushing them there directly. Otherwise
+both digests are flushed and merged by `merge_digests`. The result keeps the
+larger `max_size`.
+
 `FromIterator<f64>` creates a default-size digest, ingests the iterator through
 the buffer, and flushes before returning. `flush` is a no-op when no values are
 pending. Query methods take `&self` and do not flush automatically; the type
@@ -230,6 +236,7 @@ requested quantiles. The final centroid sort is included in these bounds.
 | `push` / `extend_values` | Amortized `O(log m)` per value | `O(m)` buffer and compression result |
 | `flush` | `O(m log m)` when the buffer is full | `O(m)` compression result; reuses the buffer |
 | `merge_digests` | `O(C log C)` | `O(C + m)` collected centroids and result |
+| `absorb` | As `push` per value if the other digest is unflushed; otherwise as `merge_digests` | As `push`, or as `merge_digests` |
 | `estimate_quantile` / `estimate_rank` / `trimmed_mean` | `O(c)` | `O(1)` |
 | `quantiles` | `O(c + k log c)` | `O(c + k)` cumulative weights and output |
 | `mean` | `O(1)` normally; `O(c + m)` if the sum is non-finite | `O(1)` |

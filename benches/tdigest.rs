@@ -119,6 +119,50 @@ fn merge_digests(c: &mut Criterion) {
     group.finish();
 }
 
+fn absorb_small_digests(c: &mut Criterion) {
+    let input = values(10_000, 70_000);
+    let buffered: Vec<TDigest> = input
+        .chunks(64)
+        .map(|chunk| {
+            let mut digest = TDigest::new_with_size(MAX_SIZE);
+            digest.extend_values(chunk.iter().copied());
+            digest
+        })
+        .collect();
+    let mut group = c.benchmark_group("absorb_small_digests");
+    group.sample_size(10).measurement_time(Duration::from_secs(2));
+    group.throughput(Throughput::Elements(input.len() as u64));
+    group.bench_function("absorb", |b| {
+        b.iter_batched(
+            || buffered.clone(),
+            |parts| {
+                let mut total = TDigest::new_with_size(MAX_SIZE);
+                for part in parts {
+                    total.absorb(part);
+                }
+                total.flush();
+                total
+            },
+            BatchSize::SmallInput,
+        )
+    });
+    group.bench_function("flush_and_merge_digests", |b| {
+        b.iter_batched(
+            || buffered.clone(),
+            |parts| {
+                let mut total = TDigest::new_with_size(MAX_SIZE);
+                for mut part in parts {
+                    part.flush();
+                    total = TDigest::merge_digests(vec![total, part]);
+                }
+                total
+            },
+            BatchSize::SmallInput,
+        )
+    });
+    group.finish();
+}
+
 fn estimate_quantile(c: &mut Criterion) {
     let digest = TDigest::new_with_size(MAX_SIZE).merge_unsorted(values(100_000, 30_000));
     let mut group = c.benchmark_group("estimate_quantile");
@@ -162,6 +206,7 @@ criterion_group!(
     small_batch_ingest,
     buffered_flush,
     merge_digests,
+    absorb_small_digests,
     estimate_quantile,
     max_size_sensitivity
 );
