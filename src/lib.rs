@@ -190,8 +190,27 @@ pub struct TDigest {
     count: f64,
     max: Option<f64>,
     min: Option<f64>,
+    /// Pending values as [`total_order_key`]s, so [`TDigest::flush`] sorts
+    /// plain integers instead of calling [`f64::total_cmp`] per comparison.
     #[cfg_attr(feature = "serde", serde(skip, default))]
-    buffer: Vec<f64>,
+    buffer: Vec<u64>,
+}
+
+const SIGN_BIT: u64 = 1 << 63;
+
+/// Map a value to a `u64` whose integer order is [`f64::total_cmp`] order.
+fn total_order_key(value: f64) -> u64 {
+    let bits = value.to_bits();
+    if bits & SIGN_BIT == 0 {
+        bits | SIGN_BIT
+    } else {
+        !bits
+    }
+}
+
+/// Inverse of [`total_order_key`].
+fn from_total_order_key(key: u64) -> f64 {
+    f64::from_bits(if key & SIGN_BIT == 0 { !key } else { key & !SIGN_BIT })
 }
 
 #[cfg(feature = "serde")]
@@ -392,8 +411,8 @@ impl TDigest {
                 for centroid in &self.centroids {
                     average.merge(centroid.mean(), centroid.weight());
                 }
-                for value in &self.buffer {
-                    average.merge(*value, 1.0);
+                for &key in &self.buffer {
+                    average.merge(from_total_order_key(key), 1.0);
                 }
                 Some(average.mean())
             }
@@ -525,7 +544,7 @@ impl TDigest {
         if self.buffer.capacity() == 0 {
             self.buffer.reserve(BUFFER_FACTOR.saturating_mul(self.max_size));
         }
-        self.buffer.push(value);
+        self.buffer.push(total_order_key(value));
 
         if self.buffer.len() >= BUFFER_FACTOR.saturating_mul(self.max_size).max(1) {
             self.flush();
@@ -548,8 +567,14 @@ impl TDigest {
         }
 
         let mut buffer = mem::take(&mut self.buffer);
-        buffer.sort_unstable_by(f64::total_cmp);
-        let mut result = self.compress_sorted(&buffer, self.count, self.min, self.max, self.sum);
+        buffer.sort_unstable();
+        let mut result = self.compress_sorted(
+            buffer.iter().map(|&key| from_total_order_key(key)),
+            self.count,
+            self.min,
+            self.max,
+            self.sum,
+        );
         buffer.clear();
         result.buffer = buffer;
         *self = result;
@@ -606,7 +631,7 @@ impl TDigest {
         };
 
         self.compress_sorted(
-            &sorted_values,
+            sorted_values.iter().copied(),
             self.count() + sorted_values.len() as f64,
             min,
             max,
@@ -616,7 +641,7 @@ impl TDigest {
 
     fn compress_sorted(
         &self,
-        sorted_values: &[f64],
+        sorted_values: impl ExactSizeIterator<Item = f64>,
         count: f64,
         min: Option<f64>,
         max: Option<f64>,
@@ -637,30 +662,30 @@ impl TDigest {
         k_limit += 1.0;
 
         let mut iter_centroids = self.centroids.iter().peekable();
-        let mut iter_sorted_values = sorted_values.iter().peekable();
+        let mut iter_sorted_values = sorted_values.peekable();
 
         let mut curr: Centroid = if let Some(c) = iter_centroids.peek() {
-            let curr = **iter_sorted_values.peek().unwrap();
+            let curr = *iter_sorted_values.peek().unwrap();
             if c.mean() < curr {
                 *iter_centroids.next().unwrap()
             } else {
-                Centroid::new(*iter_sorted_values.next().unwrap(), 1.0)
+                Centroid::new(iter_sorted_values.next().unwrap(), 1.0)
             }
         } else {
-            Centroid::new(*iter_sorted_values.next().unwrap(), 1.0)
+            Centroid::new(iter_sorted_values.next().unwrap(), 1.0)
         };
 
         let mut weight_so_far: f64 = curr.weight();
 
         while iter_centroids.peek().is_some() || iter_sorted_values.peek().is_some() {
             let next: Centroid = if let Some(c) = iter_centroids.peek() {
-                if iter_sorted_values.peek().is_none() || c.mean() < **iter_sorted_values.peek().unwrap() {
+                if iter_sorted_values.peek().is_none() || c.mean() < *iter_sorted_values.peek().unwrap() {
                     *iter_centroids.next().unwrap()
                 } else {
-                    Centroid::new(*iter_sorted_values.next().unwrap(), 1.0)
+                    Centroid::new(iter_sorted_values.next().unwrap(), 1.0)
                 }
             } else {
-                Centroid::new(*iter_sorted_values.next().unwrap(), 1.0)
+                Centroid::new(iter_sorted_values.next().unwrap(), 1.0)
             };
 
             weight_so_far += next.weight();
@@ -1404,6 +1429,33 @@ mod tests {
     }
 
     #[test]
+    fn test_total_order_key_matches_total_cmp() {
+        let mut values = vec![
+            -f64::MAX,
+            -1e300,
+            -1.5,
+            -f64::MIN_POSITIVE,
+            -f64::from_bits(1),
+            -0.0,
+            0.0,
+            f64::from_bits(1),
+            f64::MIN_POSITIVE,
+            1.0,
+            1e300,
+            f64::MAX,
+        ];
+        values.reverse();
+        let mut by_key = values.clone();
+        by_key.sort_unstable_by_key(|value| total_order_key(*value));
+        values.sort_unstable_by(f64::total_cmp);
+        let bits = |values: &[f64]| values.iter().map(|value| value.to_bits()).collect::<Vec<_>>();
+        assert_eq!(bits(&by_key), bits(&values));
+        for value in values {
+            assert_eq!(from_total_order_key(total_order_key(value)).to_bits(), value.to_bits());
+        }
+    }
+
+    #[test]
     fn test_mutable_collection_traits() {
         let mut extended = TDigest::default();
         extended.extend([1.0, 2.0, 3.0]);
@@ -1579,6 +1631,19 @@ mod tests {
                 let range = whole.max().unwrap() - whole.min().unwrap();
                 let scale = expected.abs().max(range * 0.1).max(1.0);
                 prop_assert!((estimate - expected).abs() <= scale * 0.1);
+            }
+
+            #[test]
+            fn buffered_flush_matches_batch_merges(values in finite_values()) {
+                let max_size = 20;
+                let mut buffered = TDigest::new_with_size(max_size);
+                buffered.extend_values(values.iter().copied());
+                buffered.flush();
+                let mut batch = TDigest::new_with_size(max_size);
+                for chunk in values.chunks(BUFFER_FACTOR * max_size) {
+                    batch = batch.merge_unsorted(chunk.to_vec());
+                }
+                prop_assert_eq!(buffered.centroids(), batch.centroids());
             }
 
             #[test]
