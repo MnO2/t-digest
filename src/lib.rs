@@ -555,6 +555,47 @@ impl TDigest {
         *self = result;
     }
 
+    /// Merge `other` into this digest in place, using the mutable ingestion API.
+    ///
+    /// If `other` holds only buffered values (it has never flushed), they are
+    /// pushed into `self`. That is exactly equivalent to pushing them here
+    /// directly, and avoids compressing `other` and merging centroids, which
+    /// dominates when folding many small digests into one. Otherwise both
+    /// digests are flushed and combined as by [`TDigest::merge_digests`].
+    ///
+    /// The result uses the larger `max_size` of the two digests. As with
+    /// [`TDigest::push`], call [`TDigest::flush`] before queries.
+    ///
+    /// ```
+    /// use tdigest::TDigest;
+    ///
+    /// let mut total = TDigest::new_with_size(100);
+    /// for chunk in [[1.0, 2.0], [3.0, 4.0]] {
+    ///     let mut part = TDigest::new_with_size(100);
+    ///     part.extend_values(chunk);
+    ///     total.absorb(part);
+    /// }
+    /// total.flush();
+    /// assert_eq!(total.count(), 4.0);
+    /// assert_eq!(total.estimate_quantile(0.5), Some(2.5));
+    /// ```
+    pub fn absorb(&mut self, mut other: TDigest) {
+        if other.count == 0.0 {
+            return;
+        }
+        self.max_size = self.max_size.max(other.max_size);
+        if other.centroids.is_empty() {
+            for value in mem::take(&mut other.buffer) {
+                self.push(value);
+            }
+            return;
+        }
+        self.flush();
+        other.flush();
+        let this = mem::replace(self, TDigest::new_with_size(self.max_size));
+        *self = TDigest::merge_digests(vec![this, other]);
+    }
+
     /// Merge unsorted values into a new digest, sorting them internally.
     ///
     /// ```
@@ -1403,6 +1444,60 @@ mod tests {
         assert_eq!(digest.max(), Some((capacity + 1) as f64));
     }
 
+    fn buffered(values: impl IntoIterator<Item = f64>, max_size: usize) -> TDigest {
+        let mut digest = TDigest::new_with_size(max_size);
+        digest.extend_values(values);
+        digest
+    }
+
+    #[test]
+    fn test_absorb_buffered_matches_direct_push() {
+        let values: Vec<f64> = (0..10_000).map(|i| ((i * 7919) % 10_007) as f64 - 5_000.0).collect();
+        let mut direct = TDigest::new_with_size(50);
+        let mut absorbed = TDigest::new_with_size(50);
+        for chunk in values.chunks(63) {
+            direct.extend_values(chunk.iter().copied());
+            absorbed.absorb(buffered(chunk.iter().copied(), 50));
+        }
+        assert_eq!(absorbed, direct);
+    }
+
+    #[test]
+    fn test_absorb_flushed_matches_merge_digests() {
+        let mut left = buffered((0..1_000).map(f64::from), 100);
+        let mut right = buffered((500..2_500).map(f64::from), 100);
+        right.flush();
+        let mut absorbed = left.clone();
+        absorbed.absorb(right.clone());
+        left.flush();
+        assert_eq!(absorbed, TDigest::merge_digests(vec![left, right]));
+    }
+
+    #[test]
+    fn test_absorb_empty_and_into_empty() {
+        let mut digest = buffered([1.0, 2.0, 3.0], 100);
+        let expected = digest.clone();
+        digest.absorb(TDigest::new_with_size(100));
+        assert_eq!(digest, expected);
+
+        let mut empty = TDigest::new_with_size(100);
+        empty.absorb(expected.clone());
+        assert_eq!(empty, expected);
+    }
+
+    #[test]
+    fn test_absorb_keeps_larger_max_size() {
+        let mut small = buffered([1.0, 2.0], 10);
+        small.absorb(buffered([3.0], 200));
+        assert_eq!(small.max_size(), 200);
+
+        let mut large = buffered([1.0, 2.0], 200);
+        let mut flushed = buffered([3.0], 10);
+        flushed.flush();
+        large.absorb(flushed);
+        assert_eq!(large.max_size(), 200);
+    }
+
     #[test]
     fn test_mutable_collection_traits() {
         let mut extended = TDigest::default();
@@ -1579,6 +1674,23 @@ mod tests {
                 let range = whole.max().unwrap() - whole.min().unwrap();
                 let scale = expected.abs().max(range * 0.1).max(1.0);
                 prop_assert!((estimate - expected).abs() <= scale * 0.1);
+            }
+
+            #[test]
+            fn absorbing_buffered_chunks_matches_direct_push(
+                values in finite_values(),
+                // Smaller than the flush threshold, so each part stays buffered.
+                chunk_size in 1usize..BUFFER_FACTOR * 20,
+            ) {
+                let mut direct = TDigest::new_with_size(20);
+                let mut absorbed = TDigest::new_with_size(20);
+                for chunk in values.chunks(chunk_size) {
+                    direct.extend_values(chunk.iter().copied());
+                    let mut part = TDigest::new_with_size(20);
+                    part.extend_values(chunk.iter().copied());
+                    absorbed.absorb(part);
+                }
+                prop_assert_eq!(absorbed, direct);
             }
 
             #[test]

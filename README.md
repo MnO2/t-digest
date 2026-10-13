@@ -112,6 +112,10 @@ before `estimate_quantile`, `quantiles`, `estimate_rank`, `trimmed_mean`,
 `centroids`, immutable merges, or serialization. Automatic compression happens
 when the buffer fills, so a partially filled buffer still needs an explicit flush.
 
+`absorb` merges another digest in place. A digest that has only buffered values
+is pushed into the receiver, so folding many small digests into one costs the
+same as pushing their values directly.
+
 Collecting an iterator creates a digest with the default compression factor and
 flushes it before returning:
 
